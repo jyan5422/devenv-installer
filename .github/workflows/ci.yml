@@ -40,9 +40,19 @@ jobs:
           Import-Module Pester -MinimumVersion 5.5.0
           $c = New-PesterConfiguration
           $c.Run.Path = './tests'
-          $c.Run.Exit = $true
+          $c.Run.PassThru = $true
           $c.Output.Verbosity = 'Detailed'
-          Invoke-Pester -Configuration $c
+          $r = Invoke-Pester -Configuration $c
+
+          # Emit each failure as an annotation. Job logs need admin rights to read,
+          # but annotations are public on a public repo -- so this is what makes a
+          # red build diagnosable by anyone who can see the repo.
+          foreach ($t in $r.Failed) {
+            $msg = "$($t.ExpandedPath): $($t.ErrorRecord[0].Exception.Message)" -replace "`r?`n", ' '
+            Write-Host "::error title=pester::$msg"
+          }
+          Write-Host "passed=$($r.PassedCount) failed=$($r.FailedCount) skipped=$($r.SkippedCount)"
+          if ($r.FailedCount -gt 0) { exit 1 }
 
       - name: Dry run
         shell: pwsh

@@ -129,11 +129,14 @@ Describe 'Get-InstalledDistros' {
     { Get-InstalledDistros } | Should -Not -Throw
   }
 
-  It 'returns something array-shaped' {
-    # Checked without the pipeline: piping an empty array sends zero objects to
-    # Should, which is a confusing failure rather than a real one.
+  It 'returns an array, not null, when there are no distros' {
+    # The bug this caught: `return @()` unrolls to nothing on output, so the caller
+    # gets $null. Only `,@()` survives. Checked without the pipeline, because piping
+    # an empty array sends zero objects to Should and fails for the wrong reason.
+    # -BeNullOrEmpty is no good here: an empty array is the correct answer and would
+    # trip it. `-is [array]` distinguishes @() from $null, which is the actual contract.
     $d = Get-InstalledDistros
-    $d.GetType().IsArray | Should -BeTrue
+    $d -is [array] | Should -BeTrue -Because '$null would mean the empty-array return unrolled away'
   }
 }
 

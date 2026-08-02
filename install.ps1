@@ -75,9 +75,12 @@ function Get-WslVersion {
 }
 
 function Get-InstalledDistros {
-  try { $raw = & wsl.exe --list --quiet 2>$null } catch { return @() }
-  if (-not $raw) { return @() }
-  @($raw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  # The leading commas are load-bearing. PowerShell unrolls collections on output, so
+  # a bare `return @()` emits nothing at all and the caller gets $null, not an empty
+  # array. `,@()` wraps it so exactly one level of unrolling leaves the array intact.
+  try { $raw = & wsl.exe --list --quiet 2>$null } catch { return ,@() }
+  if (-not $raw) { return ,@() }
+  ,@($raw -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 
 function Test-Admin {
