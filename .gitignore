@@ -1,0 +1,4 @@
+*.wsl
+*.tar.gz
+install.ps1.bak
+.*.sw[a-p]
