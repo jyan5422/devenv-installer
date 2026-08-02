@@ -86,33 +86,62 @@ function Test-Admin {
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-TargetArchName {
+  # Releases carry both x86_64 (nixos.wsl) and arm64 (nixos.aarch64.wsl) artifacts.
+  param([string]$Arch = $env:PROCESSOR_ARCHITECTURE)
+  if ($Arch -match 'ARM64') { return 'nixos.aarch64.wsl' }
+  return 'nixos.wsl'
+}
+
 function Resolve-NixosWslAsset {
   <#
-    Returns the current release artifact as @{ Tag; Name; Url; Size }.
-    Named nixos.wsl since release 2411; nixos-wsl.tar.gz before that. Accepting both
-    means a rename does not silently break the installer -- it fails loudly instead.
+    Returns the current release artifact as @{ Tag; Name; Url; Size; Sha256Url }.
+    Named nixos.wsl since release 2411; nixos-wsl.tar.gz before that. Accepting the
+    old name too means a rename fails loudly rather than silently.
   #>
   [CmdletBinding()]
   param(
-    [string]$ApiUrl = "https://api.github.com/repos/nix-community/NixOS-WSL/releases/latest"
+    [string]$ApiUrl = "https://api.github.com/repos/nix-community/NixOS-WSL/releases/latest",
+    [string]$AssetName = (Get-TargetArchName)
   )
   $headers = @{ "User-Agent" = "devenv-installer"; "Accept" = "application/vnd.github+json" }
   $release = Invoke-RestMethod -Uri $ApiUrl -Headers $headers
 
   $asset = $release.assets |
-    Where-Object { $_.name -eq "nixos.wsl" -or $_.name -eq "nixos-wsl.tar.gz" } |
+    Where-Object { $_.name -eq $AssetName -or $_.name -eq "nixos-wsl.tar.gz" } |
     Select-Object -First 1
 
   if (-not $asset) {
-    throw "No nixos.wsl asset in release '$($release.tag_name)'. Download it by hand from https://github.com/nix-community/NixOS-WSL/releases/latest and pass -Tarball."
+    throw "No '$AssetName' asset in release '$($release.tag_name)'. Download it by hand from https://github.com/nix-community/NixOS-WSL/releases/latest and pass -Tarball."
   }
 
+  $sha = $release.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
+
   [pscustomobject]@{
-    Tag  = $release.tag_name
-    Name = $asset.name
-    Url  = $asset.browser_download_url
-    Size = $asset.size
+    Tag       = $release.tag_name
+    Name      = $asset.name
+    Url       = $asset.browser_download_url
+    Size      = $asset.size
+    Sha256Url = $(if ($sha) { $sha.browser_download_url } else { $null })
   }
+}
+
+function Test-ArtifactHash {
+  <#
+    Upstream publishes a `<name>.sha256` next to each artifact, in the usual
+    "<hash>  <filename>" shape. Returns $true when it matches, $false when it does
+    not, and $null when there is nothing to check against -- the caller decides how
+    strict to be, rather than a missing file silently reading as success.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$Path,
+    [string]$Sha256Url
+  )
+  if (-not $Sha256Url) { return $null }
+  $expected = ((Invoke-RestMethod -Uri $Sha256Url -Headers @{ "User-Agent" = "devenv-installer" }) -split '\s+')[0]
+  if (-not $expected) { return $null }
+  $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+  return ($actual -ieq $expected)
 }
 
 function ConvertTo-SshUrl {
@@ -285,6 +314,17 @@ function Invoke-Main {
       Remove-Item -LiteralPath $artifact -Force
       throw "Download is $actual bytes, expected $($asset.Size). Deleted it; re-run."
     }
+
+    Write-Step "Verifying checksum"
+    $hashOk = Test-ArtifactHash -Path $artifact -Sha256Url $asset.Sha256Url
+    if ($hashOk -eq $false) {
+      Remove-Item -LiteralPath $artifact -Force
+      throw "SHA256 mismatch. Deleted the download; re-run."
+    } elseif ($null -eq $hashOk) {
+      Write-Warn "No published checksum for this release - size check only."
+    } else {
+      Write-Host "    sha256 ok"
+    }
   }
 
   Write-Step "Installing '$DistroName' to $InstallPath"
@@ -354,5 +394,9 @@ function Invoke-Main {
 }
 
 # Dot-sourcing sets InvocationName to '.', which loads the functions without running
-# them. Any other invocation runs the installer.
-if ($MyInvocation.InvocationName -ne '.') { Invoke-Main }
+# them. The env var is a belt-and-braces override for the test harness: if the
+# InvocationName check ever misbehaves, the fallback is running a real installer on a
+# CI machine, so it is worth having two independent guards rather than one clever one.
+if (-not $env:DEVENV_INSTALLER_NORUN -and $MyInvocation.InvocationName -ne '.') {
+  Invoke-Main
+}

@@ -1,5 +1,17 @@
 BeforeAll {
+  # Guard first: dot-sourcing must load the functions without running the installer.
+  # If that ever breaks, the failure mode is a real install attempt on the runner.
+  $env:DEVENV_INSTALLER_NORUN = '1'
   . (Join-Path $PSScriptRoot '..' 'install.ps1')
+
+  # install.ps1 sets ErrorActionPreference at script scope, which dot-sourcing leaks
+  # into the test session. Put it back so a stray non-terminating error in a test
+  # does not abort the run.
+  $ErrorActionPreference = 'Continue'
+}
+
+AfterAll {
+  Remove-Item Env:\DEVENV_INSTALLER_NORUN -ErrorAction SilentlyContinue
 }
 
 Describe 'ConvertTo-WslVersion' {
@@ -40,9 +52,13 @@ Describe 'Resolve-NixosWslAsset' -Tag 'Network' {
     $script:asset | Should -Not -BeNullOrEmpty
   }
 
-  It 'is one of the two names we know about' {
+  It 'is one of the names we know about' {
     # Fails loudly the day upstream renames it again, which is the point.
-    $script:asset.Name | Should -BeIn @('nixos.wsl', 'nixos-wsl.tar.gz')
+    $script:asset.Name | Should -BeIn @('nixos.wsl', 'nixos.aarch64.wsl', 'nixos-wsl.tar.gz')
+  }
+
+  It 'finds the matching published checksum' {
+    $script:asset.Sha256Url | Should -Match '\.sha256$'
   }
 
   It 'reports a plausible size' {
@@ -108,9 +124,37 @@ Describe 'Get-NextSteps' {
 }
 
 Describe 'Get-InstalledDistros' {
-  It 'returns an array even where WSL is absent' {
-    # CI runners have no WSL; the function must degrade to empty, not throw.
+  It 'does not throw where WSL is absent' {
+    # CI runners have no WSL; the function must degrade, not blow up.
+    { Get-InstalledDistros } | Should -Not -Throw
+  }
+
+  It 'returns something array-shaped' {
+    # Checked without the pipeline: piping an empty array sends zero objects to
+    # Should, which is a confusing failure rather than a real one.
     $d = Get-InstalledDistros
-    ,$d | Should -BeOfType [System.Object[]]
+    $d.GetType().IsArray | Should -BeTrue
+  }
+}
+
+Describe 'Get-TargetArchName' {
+  It 'picks the x86_64 artifact by default' {
+    Get-TargetArchName -Arch 'AMD64' | Should -Be 'nixos.wsl'
+  }
+
+  It 'picks the aarch64 artifact on ARM' {
+    Get-TargetArchName -Arch 'ARM64' | Should -Be 'nixos.aarch64.wsl'
+  }
+
+  It 'does not confuse the two names' {
+    # nixos.aarch64.wsl would match a sloppy wildcard for nixos.wsl.
+    Get-TargetArchName -Arch 'AMD64' | Should -Not -Be 'nixos.aarch64.wsl'
+  }
+}
+
+Describe 'Test-ArtifactHash' {
+  It 'returns null when there is no published checksum' {
+    # Null, not true -- a missing checksum must not read as a passing check.
+    Test-ArtifactHash -Path $PSCommandPath -Sha256Url $null | Should -BeNullOrEmpty
   }
 }
