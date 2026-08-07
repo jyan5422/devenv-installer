@@ -443,11 +443,17 @@ function Get-FirstRebuildCommand {
 function Invoke-FirstRebuild {
   <#
     Runs as root rather than via sudo. The fresh image has no password set, so sudo
-    would prompt for one that does not exist; root needs none. That is what lets the
-    installer do this at all without making the user set a password first.
+    would prompt for one that does not exist; root needs none.
 
-    The same choice is what creates the ownership mismatch, so mark the repo safe for
-    root first and keep a path: retry in reserve.
+    Uses path: first, not git+file://. Running as root against a clone owned by the
+    image's default user always trips libgit2's dubious-ownership check, and marking
+    the repo safe in root's gitconfig does not persuade nix's bundled libgit2. So the
+    git form fails on every clean install and prints an alarming error before the
+    fallback rescues it. path: has no such problem.
+
+    Only right for this one-shot. path: copies the directory into the store and keys
+    on its whole content, so ordinary rebuilds should keep using the git form -- which
+    they do, since they run as the owner and never hit the mismatch.
   #>
   param(
     [Parameter(Mandatory)][string]$DistroName,
@@ -457,12 +463,12 @@ function Invoke-FirstRebuild {
     -Script "git config --global --add safe.directory '$RepoPath' 2>/dev/null; true" | Out-Null
 
   Invoke-InDistro -DistroName $DistroName -User root `
-    -Script (Get-FirstRebuildCommand -RepoPath $RepoPath) | Write-Host
+    -Script (Get-FirstRebuildCommand -RepoPath $RepoPath -AsPath) | Write-Host
   if ($script:LastDistroExitCode -eq 0) { return $true }
 
-  Write-Warn "Rebuild failed; retrying with a path: flake reference, which bypasses git."
+  Write-Warn "path: rebuild failed; retrying with a git flake reference."
   Invoke-InDistro -DistroName $DistroName -User root `
-    -Script (Get-FirstRebuildCommand -RepoPath $RepoPath -AsPath) | Write-Host
+    -Script (Get-FirstRebuildCommand -RepoPath $RepoPath) | Write-Host
   return ($script:LastDistroExitCode -eq 0)
 }
 
