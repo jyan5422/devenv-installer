@@ -45,6 +45,14 @@ param(
   # will not wait for you to register it.
   [switch]$NonInteractive,
 
+  # Git identity, set inside the distro after the rebuild. Not secrets, just choices --
+  # prompted for if omitted, unless -NonInteractive.
+  [string]$GitName,
+  [string]$GitEmail,
+
+  # Do not touch git identity at all.
+  [switch]$NoGitIdentity,
+
   # Generate a new keypair even if one already exists on the Windows side.
   [switch]$FreshKey,
 
@@ -565,6 +573,25 @@ chmod 644 "$TO/.ssh"/*.pub 2>/dev/null || true
   return ($script:LastDistroExitCode -eq 0)
 }
 
+function Get-GitIdentityScript {
+  param(
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][string]$Email,
+    [Parameter(Mandatory)][string]$RepoPath
+  )
+  # Safe to assume git here: this runs after the rebuild, which puts it in the system
+  # profile. Before the rebuild it does not exist at all.
+  $sh = @'
+git config --global user.name 'GITNAME'
+git config --global user.email 'GITEMAIL'
+git config --global --add safe.directory 'REPOPATH'
+git -C 'REPOPATH' config core.hooksPath githooks 2>/dev/null || true
+mkdir -p "$HOME/.config/devenv"
+echo "identity: $(git config --global user.name) <$(git config --global user.email)>"
+'@
+  $sh.Replace('GITNAME', $Name).Replace('GITEMAIL', $Email).Replace('REPOPATH', $RepoPath)
+}
+
 function Get-NextSteps {
   param([string]$DistroName, [string]$CloneTo)
   # Split out so a test can assert the steps stay in sync with the parameters.
@@ -578,17 +605,13 @@ What is left needs a human or a secret, so it is not scripted:
      so any shell you already had open is still the old one.
        wsl -d $DistroName
 
-  2. Git identity:
-       git config --global user.name  "Your Name"
-       git config --global user.email "your-email"
-
-  3. Write the deny-list, then turn on the commit hook. It deliberately lives in no
+  2. Write the deny-list, then turn on the commit hook. It deliberately lives in no
      repo, so a fresh machine has none and the scan fails closed until you write it:
        mkdir -p ~/.config/devenv
        nano ~/.config/devenv/deny-list.txt
        git -C ~/$CloneTo config core.hooksPath githooks
 
-  4. Authenticate the agent:
+  3. Authenticate the agent:
        claude
 
 From here every rebuild is one line, no flags:
@@ -837,6 +860,19 @@ function Invoke-Main {
         } else {
           Write-Warn "Move failed. The repo and key are still in /home/$currentUser."
           Write-Warn "  wsl -d $DistroName -u root -- mv /home/$currentUser/$CloneTo /home/$targetUser/"
+        }
+      }
+
+      if (-not $NoGitIdentity) {
+        if (-not $GitName -and -not $NonInteractive)  { $GitName  = Read-Host "Git user.name" }
+        if (-not $GitEmail -and -not $NonInteractive) { $GitEmail = Read-Host "Git user.email" }
+        if ($GitName -and $GitEmail) {
+          Write-Step "Setting git identity and the commit hook"
+          Invoke-InDistro -DistroName $DistroName -User $targetUser `
+            -Script (Get-GitIdentityScript -Name $GitName -Email $GitEmail `
+                       -RepoPath "/home/$targetUser/$CloneTo") | ForEach-Object { Write-Host "    $_" }
+        } else {
+          Write-Warn "Skipping git identity - no name or email given."
         }
       }
     } else {

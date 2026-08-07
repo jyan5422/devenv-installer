@@ -359,3 +359,26 @@ Describe 'Get-UpdateCloneScript quoting' {
     $s | Should -BeLike '*no such directory: PLACEHOLDER/devenv*'
   }
 }
+
+Describe 'Get-GitIdentityScript' {
+  BeforeAll {
+    $script:g = Get-GitIdentityScript -Name 'A Person' -Email 'a@b.c' -RepoPath '/home/u/devenv'
+  }
+
+  It 'sets both halves of the identity' {
+    $script:g | Should -BeLike "*user.name 'A Person'*"
+    $script:g | Should -BeLike "*user.email 'a@b.c'*"
+  }
+
+  It 'marks the repo safe and turns the commit hook on' {
+    $script:g | Should -BeLike '*safe.directory*/home/u/devenv*'
+    $script:g | Should -BeLike '*core.hooksPath githooks*'
+  }
+
+  It 'creates the deny-list directory but not the file' {
+    # The file must stay absent: the scan fails closed without patterns, which is the
+    # intended prompt to write them. A stub would just make it fail confusingly.
+    $script:g | Should -BeLike '*mkdir -p*.config/devenv*'
+    $script:g | Should -Not -BeLike '*deny-list.txt*'
+  }
+}
