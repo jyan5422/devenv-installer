@@ -1,112 +1,109 @@
 # devenv-installer
 
-One PowerShell script that takes a Windows machine from nothing to a registered
-[NixOS-WSL](https://github.com/nix-community/NixOS-WSL) distribution.
+One PowerShell script that takes a Windows machine from nothing to a working
+[NixOS-WSL](https://github.com/nix-community/NixOS-WSL) distribution running
+[devenv](https://github.com/jyan5422/devenv).
 
-Public so the script can be fetched by URL. The environment it bootstraps
-([devenv](https://github.com/jyan5422/devenv)) is separate.
+Public so the script can be fetched by URL — the config repo it bootstraps is private, and a
+bootstrapper that lives only inside a repo you cannot yet clone is no use on a fresh machine.
 
 ## Use
 
-Nothing to download by hand. The installer fetches the NixOS-WSL artifact itself (~550 MB)
-and verifies its published sha256.
-
-From PowerShell **as Administrator** — only strictly needed if WSL is not yet installed:
+From PowerShell **as Administrator** (only strictly needed if WSL isn't installed yet):
 
 ```powershell
 irm https://raw.githubusercontent.com/jyan5422/devenv-installer/main/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ep bypass -f install.ps1
 ```
 
+Nothing to download by hand — it fetches the ~550 MB NixOS-WSL artifact itself and checks the
+published sha256.
+
 If WSL was missing it installs it and stops for a **reboot**; reboot and run the second line
-again. Re-running at any point is safe — an existing distribution is detected and skipped.
+again. When it prints your public SSH key, paste it at <https://github.com/settings/ssh/new>
+(it opens the page) and press Enter.
 
-When it prints your public SSH key, paste it at <https://github.com/settings/ssh/new> (it
-opens the page for you), then press Enter. It verifies, then clones over SSH.
+Then it runs the first rebuild itself. Expect several minutes of apparent silence — it is
+building the whole system closure.
 
-That's it. The installer runs the first rebuild itself, as root — no password to set, no
-sudo prompt, no flags to remember. Expect it to take a while; it builds the whole system
-closure.
-
-Afterwards open a **new** window (`wsl -d NixOS`), because the rebuild changed the default
-user and any shell you already had open is still the old one. What's left is git identity,
-the deny-list, and authenticating your agent — the installer prints all three.
+Afterwards open a **new** window: the rebuild changes the default user, so any shell you
+already had open is stale.
 
 ```powershell
-.\install.ps1 -DryRun                      # report what it would do, change nothing
-.\install.ps1 -SkipRebuild                 # stop after the clone; rebuild yourself
-.\install.ps1 -SkipClone                   # register the distro only
-.\install.ps1 -NoSshKey                    # do not generate a key
-.\install.ps1 -NonInteractive              # never pause for input
-.\install.ps1 -Tarball .\nixos.wsl         # use a local artifact instead of downloading
-.\install.ps1 -DistroName NixOS-test       # register under a different name
+.\install.ps1 -DryRun                 # report what it would do, change nothing
+.\install.ps1 -SkipRebuild            # stop after the clone
+.\install.ps1 -SkipClone              # register the distro only
+.\install.ps1 -NoSshKey               # do not generate a key
+.\install.ps1 -FreshKey               # new key even if one exists on Windows
+.\install.ps1 -NonInteractive         # never pause for input
+.\install.ps1 -Tarball .\nixos.wsl    # use a local artifact
+.\install.ps1 -DistroName NixOS-test  # register under a different name
 ```
 
 ## What it does
 
 1. Verifies WSL is the Store build. Installs it (elevated) and stops for a reboot if absent.
-   Warns below 2.4.4 and falls back to the legacy `--import` path.
-2. Resolves the current NixOS-WSL release through the GitHub API and downloads it, accepting
-   either `nixos.wsl` or the pre-2411 `nixos-wsl.tar.gz`. Verifies the byte count and the
-   published sha256.
-3. Registers the distribution, then confirms it by re-listing rather than trusting the exit
-   code.
-4. Generates an ed25519 SSH key, prints the public half, opens the GitHub key page, waits
-   while you paste it in, then verifies.
-5. Clones your config repo — over SSH if the key checks out, which is what makes a **private**
-   repo work.
-6. Runs the first rebuild as root, so nothing has to prompt for a password.
-7. Moves the repo and the SSH key into the new default user's home, reading that username out
-   of the flake.
-8. Prints what's left: the deny-list and agent auth. Git identity is not set here -- home-manager makes `~/.gitconfig` read-only, so it belongs in the config repo.
+   Warns below 2.4.4 and falls back to `wsl --import`.
+2. Resolves the current release through the GitHub API — `nixos.wsl`, or `nixos.aarch64.wsl`
+   on ARM — downloads it, and verifies both size and published sha256.
+3. Registers the distribution and confirms it by re-listing, rather than trusting the exit code.
+4. Reuses `%USERPROFILE%\.ssh\id_ed25519` if present, otherwise generates a key inside the
+   distro and copies it back out to Windows so a reinstall does not mint a new one.
+5. Waits while you register the key with GitHub, then verifies.
+6. Clones the config repo over SSH — the only form that works while it is private — or brings
+   an existing clone to `origin`.
+7. Runs the first rebuild as root, so nothing prompts for a password that does not exist yet.
+8. Moves the repo and SSH key into the new default user's home, reading that username out of
+   the flake.
+9. Prints what is left: the deny-list, and authenticating the agent.
 
-**Every phase checks itself.** Re-running is safe at any point and picks up wherever it got
-to — an existing distribution only means the install is done, not the key or the clone. An
-earlier version treated "distro exists" as "nothing to do" and silently skipped everything
-downstream, including on the re-run after the reboot it had just asked for.
+**Every phase checks itself**, so re-running is safe and resumes wherever it stopped. It will
+also adopt a clone stranded in another user's home, which is the state an interrupted first
+rebuild leaves behind.
 
-## The home directory move
+## What it deliberately does not do
 
-The image's default user is `nixos`, so that's who clones the repo and owns the new SSH key.
-The rebuild then switches the default user to whoever the flake declares. Without step 7 the
-new user comes up to an empty home: no repo, no key, and a key registered with GitHub that
-appears not to work. The installer reads `wsl.defaultUser` from the flake with `nix eval`
-rather than hardcoding a name that lives in someone else's config.
+**Set your git identity.** devenv enables home-manager's git module, which makes
+`~/.gitconfig` a read-only symlink into the nix store — `git config --global` fails there with
+*could not lock config file*. Identity is declared in `home/git.nix` instead, which is also
+the only place it survives a rebuild.
 
-## The SSH key
+**Write your deny-list.** `devenv/scripts/scan.sh` blocks commits containing employer content,
+reading patterns from `~/.config/devenv/deny-list.txt`. That file deliberately lives in no
+repo — a committed list of the strings you must never publish is itself the leak. The
+installer creates the directory; the patterns are yours. It fails closed, so a missing file
+blocks commits rather than passing silently.
 
-Generating a key needs no credentials; only registering it does. So the installer makes the
-key and hands you the public half, and the only manual part is the paste.
+## Things worth knowing
 
-It's idempotent — an existing `~/.ssh/id_ed25519` is read, never regenerated. No passphrase,
-because the key is used non-interactively by git and by this script; add one later with
-`ssh-keygen -p` if you want it.
+**The base image is minimal.** No `git`, no `ssh`, no `ssh-keygen` until the first rebuild
+installs them. The installer resolves what it needs through `nix-shell` in the meantime — and
+`nix-shell` rather than `nix run`, because a freshly imported image is channel-based with
+flakes off.
 
-Verification matches on GitHub's greeting rather than the exit code, because `ssh -T
-git@github.com` exits 1 even when auth succeeds.
+**Flakes go on the command line exactly once.** The config enables them permanently, but not
+until it has been applied, so the first rebuild has to pass
+`--option experimental-features 'nix-command flakes'` itself.
 
-## Where it stops, and why
+**The first rebuild uses a `path:` flake reference.** Running as root against a clone owned by
+another user trips libgit2's dubious-ownership check, and marking the repo safe in root's
+gitconfig does not persuade nix's bundled libgit2. `path:` bypasses git entirely. Ordinary
+rebuilds keep the normal form — they run as the owner and never hit it.
 
-At the first `nixos-rebuild`. That step is interactive, may prompt for a password you haven't
-set yet, and is worth watching the first time. Git identity is left alone too — it's a
-preference, not something to guess.
-
-One thing that catches everyone: the first rebuild must pass flakes on the command line,
-because a freshly imported image is channel-based and ships with them disabled.
-
-```bash
-sudo nixos-rebuild switch --flake ~/devenv#wsl \
-  --option experimental-features 'nix-command flakes'
-```
+**A login shell prints a welcome banner** on a fresh image, on every invocation. Every command
+the installer runs is fenced with a marker so that banner cannot be mistaken for output.
 
 ## Development
 
 `install.ps1` is dot-sourceable — `. .\install.ps1` loads the functions without running
 anything, which is how the tests drive it.
 
-CI runs on `windows-latest`: parse check, PSScriptAnalyzer, Pester, and a `-DryRun` that
-exercises release resolution against the live GitHub API. That last one fails the day
-upstream renames the artifact, which is deliberate.
+CI on `windows-latest` runs: a parse check under **both** pwsh 7 and Windows PowerShell 5.1,
+PSScriptAnalyzer, Pester, and a `-DryRun` against the live GitHub API.
+
+Both parse checks matter. `||` is a valid operator in 7 and a syntax error in 5.1, and the
+documented invocation is `powershell -File`, which is 5.1. Checking only under 7 let a hard
+parse error ship once.
 
 ```powershell
 Invoke-Pester ./tests
