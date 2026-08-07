@@ -279,29 +279,51 @@ function New-SshKeyInDistro {
     [Parameter(Mandatory)][string]$Comment
   )
 
-  # openssh may not be in the base image; fall back to running it from nixpkgs.
+  # Everything to stdout: a failure here used to return $null with no reason, which is
+  # useless to whoever has to fix it. The public key is picked out by prefix afterwards.
+  #
+  # Fallback order matters. A freshly imported image is channel-based with flakes off,
+  # so nix-shell (channels) is likelier to work than nix run (flakes) -- try it first.
   $keyScript = @'
-set -e
+exec 2>&1
 KEY="$HOME/.ssh/id_ed25519"
+echo "diag: user=$(whoami) home=$HOME"
+mkdir -p "$HOME/.ssh" || echo "diag: mkdir failed"
+chmod 700 "$HOME/.ssh" 2>/dev/null
+
 if [ ! -f "$KEY" ]; then
-  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   if command -v ssh-keygen >/dev/null 2>&1; then
-    ssh-keygen -t ed25519 -N "" -C "COMMENT" -f "$KEY" >/dev/null
+    echo "diag: using system ssh-keygen"
+    ssh-keygen -t ed25519 -N "" -C "COMMENT" -f "$KEY" || echo "diag: ssh-keygen failed rc=$?"
+  elif command -v nix-shell >/dev/null 2>&1; then
+    echo "diag: no ssh-keygen; trying nix-shell -p openssh"
+    nix-shell -p openssh --run "ssh-keygen -t ed25519 -N '' -C 'COMMENT' -f '$KEY'" \
+      || echo "diag: nix-shell path failed rc=$?"
   else
-    nix --extra-experimental-features 'nix-command flakes' \
-      run nixpkgs#openssh -- ssh-keygen -t ed25519 -N "" -C "COMMENT" -f "$KEY" >/dev/null
+    echo "diag: no ssh-keygen and no nix-shell; trying nix run"
+    nix --extra-experimental-features 'nix-command flakes' run nixpkgs#openssh -- \
+      ssh-keygen -t ed25519 -N "" -C "COMMENT" -f "$KEY" || echo "diag: nix run failed rc=$?"
   fi
+else
+  echo "diag: key already present"
 fi
-cat "$KEY.pub"
+
+if [ -f "$KEY.pub" ]; then
+  cat "$KEY.pub"
+else
+  echo "diag: $KEY.pub still missing"
+fi
 '@.Replace('COMMENT', $Comment)
 
-  $pub = Invoke-InDistro -DistroName $DistroName -Script $keyScript
-  if ($script:LastDistroExitCode -ne 0) { return $null }
-  $joined = ($pub -join "`n").Trim()
-  # A key line always starts with the type. Anything else means the script failed in a
-  # way that still exited 0, and returning it would print garbage as if it were a key.
-  if ($joined -notmatch '^ssh-') { return $null }
-  return $joined
+  $out = @(Invoke-InDistro -DistroName $DistroName -Script $keyScript)
+  $pubLine = $out | Where-Object { $_ -match '^ssh-' } | Select-Object -First 1
+
+  if (-not $pubLine) {
+    Write-Warn "Could not create or read a key. What the distro reported:"
+    foreach ($line in $out) { Write-Warn "  $line" }
+    return $null
+  }
+  return $pubLine.Trim()
 }
 
 function Test-GitHubSsh {
