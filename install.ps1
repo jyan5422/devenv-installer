@@ -670,12 +670,30 @@ function Invoke-Main {
   }
 
   # Everything below needs the repo on disk.
-  $currentUser = (Invoke-InDistro -DistroName $DistroName -Script 'echo $USER') -join ""
-  $currentUser = $currentUser.Trim()
+  #
+  # whoami, not `echo $USER`: USER is frequently unset in a non-interactive WSL shell,
+  # which silently produced "/home//devenv", failed the directory test, and skipped the
+  # rebuild without saying a word.
+  $currentUser = ((Invoke-InDistro -DistroName $DistroName -Script 'whoami') -join "").Trim()
+  if (-not $currentUser) {
+    Write-Warn "Could not determine the distro user; assuming 'nixos'."
+    $currentUser = 'nixos'
+  }
   $repoPath = "/home/$currentUser/$CloneTo"
   $repoPresent = $false
   Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
   if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
+  Write-Host "    user=$currentUser repo=$repoPath present=$repoPresent"
+
+  if ($SkipRebuild) {
+    Write-Step "Skipping the first rebuild (-SkipRebuild). Run it yourself with:"
+    Write-Host "      wsl -d $DistroName -u root -- $(Get-FirstRebuildCommand -RepoPath $repoPath)"
+  } elseif (-not $repoPresent) {
+    # Never skip this quietly -- an install that stops here looks finished but is not.
+    Write-Warn "No repo at $repoPath, so the first rebuild was not run."
+    Write-Warn "Find the clone and rebuild against it:"
+    Write-Warn "  wsl -d $DistroName -- bash -lc 'ls -d ~/$CloneTo'"
+  }
 
   if (-not $SkipRebuild -and $repoPresent) {
     $targetUser = Get-FlakeDefaultUser -DistroName $DistroName -RepoPath $repoPath
