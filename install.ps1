@@ -415,7 +415,7 @@ function Get-UpdateCloneScript {
   #>
   param([Parameter(Mandatory)][string]$RepoPath)
   @"
-cd "`$RepoPath" || { echo "UPDATE: no such directory: `$RepoPath"; exit 1; }
+cd "$RepoPath" || { echo "UPDATE: no such directory: $RepoPath"; exit 1; }
 
 # git is not in the NixOS-WSL base image -- same as openssh. It only arrives with the
 # first rebuild, which is the very thing this function is trying to enable. Resolve a
