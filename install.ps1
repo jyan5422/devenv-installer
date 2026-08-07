@@ -49,6 +49,9 @@ param(
   # Generate a new keypair even if one already exists on the Windows side.
   [switch]$FreshKey,
 
+  # Do not register the logon task that keeps the distro alive between sessions.
+  [switch]$NoKeepAlive,
+
   # Stop after the clone instead of running the first rebuild. The rebuild is slow
   # and builds the whole system closure, so this exists for when you want to watch it
   # yourself or edit the config before it is applied.
@@ -631,6 +634,39 @@ echo "identity: $(git config user.name) <$(git config user.email)>"
   $sh.Replace('REPOPATH', $RepoPath)
 }
 
+function Register-KeepAliveTask {
+  <#
+    WSL tears the distribution down once the last session detaches, taking systemd and
+    every service with it -- so an xrdp session dies the moment you close the terminal
+    you started it from. Nothing inside the distro can prevent that; the lifetime is
+    decided on the Windows side.
+
+    So: a logon task holding one root session open. `sleep infinity` costs nothing and
+    keeps systemd, and therefore xrdp, alive with no shell attached.
+
+    Registered for the current user, not the machine, so it needs no elevation and
+    starts when you log in -- which is also when you would want the desktop reachable.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [string]$TaskName = "wsl-keepalive"
+  )
+  try {
+    $action = New-ScheduledTaskAction -Execute "wsl.exe" `
+      -Argument "-d $DistroName -u root -- sleep infinity"
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    # No execution time limit: the whole point is that it never finishes. The battery
+    # settings stop Windows killing it on an unplugged laptop.
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+      -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+      -Settings $settings -Force -ErrorAction Stop | Out-Null
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Get-NextSteps {
   param([string]$DistroName, [string]$CloneTo)
   # Split out so a test can assert the steps stay in sync with the parameters.
@@ -914,6 +950,18 @@ function Invoke-Main {
         } else {
           Write-Warn "Move failed. The repo and key are still in /home/$currentUser."
           Write-Warn "  wsl -d $DistroName -u root -- mv /home/$currentUser/$CloneTo /home/$targetUser/"
+        }
+      }
+
+      if (-not $NoKeepAlive) {
+        Write-Step "Registering a logon task to keep the distro running"
+        if (Register-KeepAliveTask -DistroName $DistroName) {
+          Write-Host "    task 'wsl-keepalive' registered - starts at logon"
+          Start-ScheduledTask -TaskName "wsl-keepalive" -ErrorAction SilentlyContinue
+        } else {
+          Write-Warn "Could not register the keep-alive task. Services will stop when"
+          Write-Warn "the last WSL session closes. Register it by hand, or run:"
+          Write-Warn "  wsl -d $DistroName -u root -- sleep infinity"
         }
       }
 

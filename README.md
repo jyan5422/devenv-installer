@@ -36,6 +36,7 @@ already had open is stale.
 .\install.ps1 -NoSshKey               # do not generate a key
 .\install.ps1 -FreshKey               # new key even if one exists on Windows
 .\install.ps1 -NonInteractive         # never pause for input
+.\install.ps1 -NoKeepAlive           # skip the logon keep-alive task
 .\install.ps1 -Tarball .\nixos.wsl    # use a local artifact
 .\install.ps1 -DistroName NixOS-test  # register under a different name
 ```
@@ -55,7 +56,9 @@ already had open is stale.
 7. Runs the first rebuild as root, so nothing prompts for a password that does not exist yet.
 8. Moves the repo and SSH key into the new default user's home, reading that username out of
    the flake.
-9. Prints what is left: the deny-list, and authenticating the agent.
+9. Registers a logon task that holds one root session open, so the distro keeps running
+   between terminal sessions.
+10. Prints what is left: the deny-list, and authenticating the agent.
 
 **Every phase checks itself**, so re-running is safe and resumes wherever it stopped. It will
 also adopt a clone stranded in another user's home, which is the state an interrupted first
@@ -89,6 +92,14 @@ until it has been applied, so the first rebuild has to pass
 another user trips libgit2's dubious-ownership check, and marking the repo safe in root's
 gitconfig does not persuade nix's bundled libgit2. `path:` bypasses git entirely. Ordinary
 rebuilds keep the normal form — they run as the owner and never hit it.
+
+**WSL stops the distro when the last session detaches**, taking systemd and every service
+with it — so an xrdp desktop dies the moment you close the terminal you started it from.
+Nothing inside the distro can prevent this; the lifetime is decided on the Windows side. The
+installer registers a logon task running `wsl -d NixOS -u root -- sleep infinity`, which keeps
+systemd alive with no shell attached. Related but separate: `vmIdleTimeout` in
+`%UserProfile%\.wslconfig` governs how long the utility VM lingers, and the machine sleeping
+suspends everything regardless.
 
 **A login shell prints a welcome banner** on a fresh image, on every invocation. Every command
 the installer runs is fenced with a marker so that banner cannot be mistaken for output.
