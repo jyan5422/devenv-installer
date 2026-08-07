@@ -474,8 +474,12 @@ function Get-FlakeDefaultUser {
     [Parameter(Mandatory)][string]$DistroName,
     [Parameter(Mandatory)][string]$RepoPath
   )
-  $cmd = "cd '$RepoPath' 2>/dev/null && nix --extra-experimental-features 'nix-command flakes' " +
-         "eval --raw .#nixosConfigurations.wsl.config.wsl.defaultUser 2>/dev/null"
+  # path:, not a bare directory. A bare path makes nix treat it as a git repo, and
+  # this runs as root against a clone owned by the image's default user -- the same
+  # dubious-ownership refusal that broke the rebuild. It failed silently here, which
+  # meant the target user came back null and the home-directory move never happened.
+  $cmd = "nix --extra-experimental-features 'nix-command flakes' " +
+         "eval --raw 'path:$RepoPath#nixosConfigurations.wsl.config.wsl.defaultUser' 2>/dev/null"
   $u = (Invoke-InDistro -DistroName $DistroName -Script $cmd -User root) -join ""
   $u = $u.Trim()
   if ($script:LastDistroExitCode -ne 0 -or -not $u) { return $null }
