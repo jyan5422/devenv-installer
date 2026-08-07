@@ -45,10 +45,11 @@ param(
   # will not wait for you to register it.
   [switch]$NonInteractive,
 
-  # Git identity, set inside the distro after the rebuild. Not secrets, just choices --
-  # prompted for if omitted, unless -NonInteractive.
-  [string]$GitName,
-  [string]$GitEmail,
+  # Git identity, set inside the distro after the rebuild. Not secrets -- the noreply
+  # address is designed to be public and appears in every commit anyway. Override on
+  # the command line for a different machine or user.
+  [string]$GitName  = "James Yan",
+  [string]$GitEmail = "7458939+jyan5422@users.noreply.github.com",
 
   # Do not touch git identity at all.
   [switch]$NoGitIdentity,

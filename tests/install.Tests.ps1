@@ -382,3 +382,12 @@ Describe 'Get-GitIdentityScript' {
     $script:g | Should -Not -BeLike '*deny-list.txt*'
   }
 }
+
+Describe 'git identity defaults' {
+  It 'uses the ID-prefixed noreply form' {
+    # GitHub attributes commits by email. The bare username@users.noreply form is
+    # legacy; the numeric-ID prefix is what GitHub issues now.
+    $s = Get-Content (Join-Path $PSScriptRoot '..' 'install.ps1') -Raw
+    $s | Should -Match '\d+\+[A-Za-z0-9-]+@users\.noreply\.github\.com'
+  }
+}

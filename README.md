@@ -34,6 +34,8 @@ the deny-list, and authenticating your agent — the installer prints all three.
 
 ```powershell
 .\install.ps1 -DryRun                      # report what it would do, change nothing
+.\install.ps1 -GitName 'X' -GitEmail 'x@y' # override the default git identity
+.\install.ps1 -NoGitIdentity               # leave git config alone
 .\install.ps1 -SkipRebuild                 # stop after the clone; rebuild yourself
 .\install.ps1 -SkipClone                   # register the distro only
 .\install.ps1 -NoSshKey                    # do not generate a key
