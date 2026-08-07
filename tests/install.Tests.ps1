@@ -310,7 +310,9 @@ Describe 'Get-UpdateCloneScript' {
   BeforeAll { $script:s = Get-UpdateCloneScript -RepoPath '/home/nixos/devenv' }
 
   It 'cds to the repo it was given' {
-    $script:s | Should -BeLike '*cd "$RepoPath"*'
+    # The generated script must contain the interpolated path, not the literal
+    # parameter name -- getting that backwards is what broke the update entirely.
+    $script:s | Should -BeLike '*cd "/home/nixos/devenv"*'
   }
 
   It 'does not assume git exists' {
