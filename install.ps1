@@ -464,6 +464,50 @@ echo "UPDATE: now at `$("`$GIT" rev-parse --short HEAD)"
 "@
 }
 
+function Get-FindCloneScript {
+  <#
+    Looks for an existing clone in any user's home, not just the current one.
+
+    Needed because the first rebuild switches the default user. After that, `whoami`
+    reports the new user while the clone is still sitting in the old user's home --
+    so a re-run looked in the wrong place, found nothing, and skipped the rebuild and
+    the move that would have fixed it. Self-inflicted and exactly the state a
+    re-runnable installer should be able to repair.
+  #>
+  param([Parameter(Mandatory)][string]$CloneTo)
+  $sh = @'
+for d in /home/*/CLONEDIR; do
+  if [ -d "$d/.git" ]; then echo "$d"; exit 0; fi
+done
+exit 1
+'@
+  $sh.Replace('CLONEDIR', $CloneTo)
+}
+
+function Get-AdoptCloneScript {
+  # Moves a clone (and the ssh key beside it) into the current default user's home.
+  param(
+    [Parameter(Mandatory)][string]$From,
+    [Parameter(Mandatory)][string]$ToUser,
+    [Parameter(Mandatory)][string]$CloneTo
+  )
+  $sh = @'
+set -e
+FROM='FROMPATH'
+TO=/home/TOUSER
+FROMHOME="$(dirname "$FROM")"
+[ -d "$TO" ] || { echo "adopt: no /home/TOUSER"; exit 1; }
+if [ ! -e "$TO/CLONEDIR" ]; then mv "$FROM" "$TO/CLONEDIR"; fi
+if [ -d "$FROMHOME/.ssh" ] && [ ! -e "$TO/.ssh" ]; then mv "$FROMHOME/.ssh" "$TO/.ssh"; fi
+chown -R TOUSER "$TO/CLONEDIR" 2>/dev/null || true
+chown -R TOUSER "$TO/.ssh" 2>/dev/null || true
+chmod 700 "$TO/.ssh" 2>/dev/null || true
+chmod 600 "$TO/.ssh"/id_* 2>/dev/null || true
+echo "adopt: moved to $TO/CLONEDIR"
+'@
+  $sh.Replace('FROMPATH', $From).Replace('TOUSER', $ToUser).Replace('CLONEDIR', $CloneTo)
+}
+
 function Get-FlakeDefaultUser {
   <#
     Reads wsl.defaultUser out of the cloned flake, so the installer does not have to
@@ -832,6 +876,21 @@ function Invoke-Main {
   $repoPresent = $false
   Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
   if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
+
+  if (-not $repoPresent) {
+    # Look in every home before giving up -- the rebuild may have already moved the
+    # default user out from under a clone left in the previous user's home.
+    $found = ((Invoke-InDistro -DistroName $DistroName `
+                -Script (Get-FindCloneScript -CloneTo $CloneTo)) -join "").Trim()
+    if ($found -and $found -ne $repoPath) {
+      Write-Step "Found a clone at $found - adopting it into /home/$currentUser"
+      Invoke-InDistro -DistroName $DistroName -User root `
+        -Script (Get-AdoptCloneScript -From $found -ToUser $currentUser -CloneTo $CloneTo) |
+        ForEach-Object { Write-Host "    $_" }
+      Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
+      if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
+    }
+  }
   $headLine = if ($repoPresent) {
     ((Invoke-InDistro -DistroName $DistroName `
        -Script (Get-HeadCommitScript -RepoPath $repoPath)) -join " ").Trim()

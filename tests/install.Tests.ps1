@@ -391,3 +391,42 @@ Describe 'git identity defaults' {
     $s | Should -Match '\d+\+[A-Za-z0-9-]+@users\.noreply\.github\.com'
   }
 }
+
+Describe 'Get-FindCloneScript' {
+  It 'searches every home, not just one' {
+    Get-FindCloneScript -CloneTo 'devenv' | Should -BeLike '*/home/*/devenv*'
+  }
+
+  It 'requires a .git directory so it does not adopt a stray folder' {
+    Get-FindCloneScript -CloneTo 'devenv' | Should -BeLike '*-d "$d/.git"*'
+  }
+
+  It 'exits non-zero when nothing is found' {
+    Get-FindCloneScript -CloneTo 'devenv' | Should -BeLike '*exit 1*'
+  }
+}
+
+Describe 'Get-AdoptCloneScript' {
+  BeforeAll {
+    $script:a = Get-AdoptCloneScript -From '/home/nixos/devenv' -ToUser 'yanjh' -CloneTo 'devenv'
+  }
+
+  It 'moves the clone into the target home' {
+    $script:a | Should -BeLike '*mv "$FROM" "$TO/devenv"*'
+  }
+
+  It 'brings the ssh key across too' {
+    # The key lives beside the clone in the old home; leaving it behind means a
+    # registered GitHub key that appears not to work.
+    $script:a | Should -BeLike '*.ssh*'
+  }
+
+  It 'refuses to clobber an existing clone' {
+    $script:a | Should -BeLike '*if [ ! -e "$TO/devenv" ]*'
+  }
+
+  It 'restores private key permissions after the move' {
+    # ssh rejects a key it considers too readable, and chown alone does not fix mode.
+    $script:a | Should -BeLike '*chmod 600*'
+  }
+}
