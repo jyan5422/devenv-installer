@@ -287,3 +287,21 @@ Describe 'Select-AfterMarker' {
       Should -Be @('l1', 'l2', 'l3')
   }
 }
+
+Describe 'Get-FirstRebuildCommand -AsPath' {
+  It 'uses a path: reference that bypasses git' {
+    # Fallback for libgit2 refusing a repo owned by another user (error code 7).
+    Get-FirstRebuildCommand -RepoPath '/home/nixos/devenv' -AsPath |
+      Should -Match '--flake path:/home/nixos/devenv#wsl'
+  }
+
+  It 'still passes experimental features in the fallback' {
+    Get-FirstRebuildCommand -RepoPath '/x' -AsPath |
+      Should -Match "experimental-features 'nix-command flakes'"
+  }
+
+  It 'differs from the default form' {
+    (Get-FirstRebuildCommand -RepoPath '/x') |
+      Should -Not -Be (Get-FirstRebuildCommand -RepoPath '/x' -AsPath)
+  }
+}

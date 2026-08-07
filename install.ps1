@@ -426,9 +426,18 @@ function Get-FirstRebuildCommand {
     channel-based and ships with flakes disabled -- the config enables them, but not
     until it has been applied once. Split out from the caller so the flag itself is
     testable; losing it is the single most likely way a clean install fails.
+
+    -AsPath switches the flake reference from the default git+file:// to path:, which
+    stops nix using libgit2 at all. That is the fallback when git refuses the repo for
+    dubious ownership: the rebuild runs as root, the clone is owned by the image's
+    default user, and libgit2 rejects the mismatch (error code 7).
   #>
-  param([Parameter(Mandatory)][string]$RepoPath)
-  "nixos-rebuild switch --flake '$RepoPath'#wsl --option experimental-features 'nix-command flakes'"
+  param(
+    [Parameter(Mandatory)][string]$RepoPath,
+    [switch]$AsPath
+  )
+  $ref = if ($AsPath) { "path:$RepoPath" } else { "'$RepoPath'" }
+  "nixos-rebuild switch --flake $ref#wsl --option experimental-features 'nix-command flakes'"
 }
 
 function Invoke-FirstRebuild {
@@ -436,13 +445,24 @@ function Invoke-FirstRebuild {
     Runs as root rather than via sudo. The fresh image has no password set, so sudo
     would prompt for one that does not exist; root needs none. That is what lets the
     installer do this at all without making the user set a password first.
+
+    The same choice is what creates the ownership mismatch, so mark the repo safe for
+    root first and keep a path: retry in reserve.
   #>
   param(
     [Parameter(Mandatory)][string]$DistroName,
     [Parameter(Mandatory)][string]$RepoPath
   )
   Invoke-InDistro -DistroName $DistroName -User root `
+    -Script "git config --global --add safe.directory '$RepoPath' 2>/dev/null; true" | Out-Null
+
+  Invoke-InDistro -DistroName $DistroName -User root `
     -Script (Get-FirstRebuildCommand -RepoPath $RepoPath) | Write-Host
+  if ($script:LastDistroExitCode -eq 0) { return $true }
+
+  Write-Warn "Rebuild failed; retrying with a path: flake reference, which bypasses git."
+  Invoke-InDistro -DistroName $DistroName -User root `
+    -Script (Get-FirstRebuildCommand -RepoPath $RepoPath -AsPath) | Write-Host
   return ($script:LastDistroExitCode -eq 0)
 }
 
