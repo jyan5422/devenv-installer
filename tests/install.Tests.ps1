@@ -310,25 +310,35 @@ Describe 'Get-UpdateCloneScript' {
   BeforeAll { $script:s = Get-UpdateCloneScript -RepoPath '/home/nixos/devenv' }
 
   It 'cds to the repo it was given' {
-    $script:s | Should -BeLike '*cd "/home/nixos/devenv"*'
+    $script:s | Should -BeLike '*cd "$RepoPath"*'
+  }
+
+  It 'does not assume git exists' {
+    # git is absent from the NixOS-WSL base image until the first rebuild -- which is
+    # the thing this script exists to enable, so it cannot depend on it.
+    $script:s | Should -BeLike '*nix-shell -p git*'
+  }
+
+  It 'fails loudly when no git can be found' {
+    $script:s | Should -BeLike '*no git available*'
   }
 
   It 'resets hard rather than fast-forwarding' {
     # reset also repairs a diverged or detached checkout; pull --ff-only just fails
     # and leaves you rebuilding something old.
-    $script:s | Should -Match 'git reset --hard origin/'
+    $script:s | Should -BeLike '*reset --hard origin/*'
   }
 
   It 'checks for local changes before touching anything' {
-    $script:s | Should -Match 'git status --porcelain'
+    $script:s | Should -BeLike '*status --porcelain*'
   }
 
   It 'reports the resulting commit' {
-    $script:s | Should -Match 'git rev-parse --short HEAD'
+    $script:s | Should -BeLike '*rev-parse --short HEAD*'
   }
 
   It 'uses distinct exit codes so the caller can tell cases apart' {
-    foreach ($code in 1..4) { $script:s | Should -Match "exit $code" }
+    foreach ($code in 1..5) { $script:s | Should -BeLike "*exit $code*" }
   }
 }
 

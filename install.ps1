@@ -415,16 +415,27 @@ function Get-UpdateCloneScript {
   #>
   param([Parameter(Mandatory)][string]$RepoPath)
   @"
-cd "$RepoPath" || { echo "UPDATE: no such directory: $RepoPath"; exit 1; }
-if [ -n "`$(git status --porcelain 2>/dev/null)" ]; then
+cd "`$RepoPath" || { echo "UPDATE: no such directory: `$RepoPath"; exit 1; }
+
+# git is not in the NixOS-WSL base image -- same as openssh. It only arrives with the
+# first rebuild, which is the very thing this function is trying to enable. Resolve a
+# store path via nix-shell (channels, not flakes: the image has flakes off) and use it
+# directly; the path stays valid after the shell exits.
+GIT="`$(command -v git 2>/dev/null || true)"
+if [ -z "`$GIT" ]; then
+  GIT="`$(nix-shell -p git --run 'command -v git' 2>/dev/null | tail -1)"
+fi
+if [ -z "`$GIT" ] || [ ! -x "`$GIT" ]; then echo 'UPDATE: no git available'; exit 5; fi
+
+if [ -n "`$("`$GIT" status --porcelain 2>/dev/null)" ]; then
   echo "UPDATE: local changes present, leaving the checkout alone"
-  git log --oneline -1 2>/dev/null
+  "`$GIT" log --oneline -1 2>/dev/null
   exit 2
 fi
-git fetch origin 2>&1 || { echo 'UPDATE: fetch failed'; git log --oneline -1; exit 3; }
-git reset --hard origin/HEAD 2>/dev/null || git reset --hard origin/main 2>&1 || {
-  echo 'UPDATE: reset failed'; git log --oneline -1; exit 4; }
-echo "UPDATE: now at `$(git rev-parse --short HEAD)"
+"`$GIT" fetch origin 2>&1 || { echo 'UPDATE: fetch failed'; "`$GIT" log --oneline -1; exit 3; }
+"`$GIT" reset --hard origin/HEAD 2>/dev/null || "`$GIT" reset --hard origin/main 2>&1 || {
+  echo 'UPDATE: reset failed'; "`$GIT" log --oneline -1; exit 4; }
+echo "UPDATE: now at `$("`$GIT" rev-parse --short HEAD)"
 "@
 }
 
@@ -778,7 +789,7 @@ function Invoke-Main {
   Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
   if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
   $headLine = if ($repoPresent) {
-    ((Invoke-InDistro -DistroName $DistroName -Script "git -C '$repoPath' log --oneline -1 2>/dev/null") -join " ").Trim()
+    ((Invoke-InDistro -DistroName $DistroName -Script "G=\$(command -v git || nix-shell -p git --run 'command -v git' 2>/dev/null | tail -1); \"\$G\" -C '$repoPath' log --oneline -1 2>/dev/null") -join " ").Trim()
   } else { "n/a" }
   Write-Host "    user=$currentUser repo=$repoPath present=$repoPresent"
   Write-Host "    head=$headLine"
