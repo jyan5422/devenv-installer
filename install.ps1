@@ -45,6 +45,11 @@ param(
   # will not wait for you to register it.
   [switch]$NonInteractive,
 
+  # Stop after the clone instead of running the first rebuild. The rebuild is slow
+  # and builds the whole system closure, so this exists for when you want to watch it
+  # yourself or edit the config before it is applied.
+  [switch]$SkipRebuild,
+
   # Report what would happen and exit. Used by CI, which has no WSL.
   [switch]$DryRun
 )
@@ -210,6 +215,82 @@ function Test-GitHubSsh {
   }
 }
 
+function Get-FlakeDefaultUser {
+  <#
+    Reads wsl.defaultUser out of the cloned flake, so the installer does not have to
+    hardcode a username that lives in someone else's config. Returns $null if the
+    flake cannot be evaluated -- caller falls back to leaving things where they are.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [Parameter(Mandatory)][string]$RepoPath
+  )
+  $cmd = "cd '$RepoPath' 2>/dev/null && nix --extra-experimental-features 'nix-command flakes' " +
+         "eval --raw .#nixosConfigurations.wsl.config.wsl.defaultUser 2>/dev/null"
+  $u = (& wsl.exe -d $DistroName -u root -- bash -lc $cmd) -join ""
+  $u = $u.Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $u) { return $null }
+  return $u
+}
+
+function Invoke-FirstRebuild {
+  <#
+    Runs as root rather than via sudo. The fresh image has no password set, so sudo
+    would prompt for one that does not exist; root needs none. Also why the installer
+    can do this at all without making the user set a password first.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [Parameter(Mandatory)][string]$RepoPath
+  )
+  # Experimental features on the command line because the imported image is
+  # channel-based and ships with flakes disabled. Only needed this once.
+  $cmd = "nixos-rebuild switch --flake '$RepoPath'#wsl " +
+         "--option experimental-features 'nix-command flakes'"
+  & wsl.exe -d $DistroName -u root -- bash -lc $cmd
+  return ($LASTEXITCODE -eq 0)
+}
+
+function Move-UserState {
+  <#
+    The clone and the SSH key are created as the image's default user (nixos), but the
+    rebuild switches the default user to whoever the flake declares. Without this, both
+    are stranded in /home/nixos and the new user comes up to an empty home -- no repo,
+    no key, and a GitHub-registered key that appears not to work.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [Parameter(Mandatory)][string]$FromUser,
+    [Parameter(Mandatory)][string]$ToUser,
+    [Parameter(Mandatory)][string]$CloneTo
+  )
+  if ($FromUser -eq $ToUser) { return $true }
+
+  $sh = @'
+set -e
+FROM=/home/FROMUSER
+TO=/home/TOUSER
+[ -d "$TO" ] || exit 0
+
+if [ -d "$FROM/CLONEDIR" ] && [ ! -e "$TO/CLONEDIR" ]; then
+  mv "$FROM/CLONEDIR" "$TO/CLONEDIR"
+fi
+
+if [ -d "$FROM/.ssh" ] && [ ! -e "$TO/.ssh" ]; then
+  mv "$FROM/.ssh" "$TO/.ssh"
+fi
+
+chown -R TOUSER "$TO/CLONEDIR" 2>/dev/null || true
+chown -R TOUSER "$TO/.ssh" 2>/dev/null || true
+chmod 700 "$TO/.ssh" 2>/dev/null || true
+chmod 600 "$TO/.ssh"/id_* 2>/dev/null || true
+chmod 644 "$TO/.ssh"/*.pub 2>/dev/null || true
+'@.Replace('FROMUSER', $FromUser).Replace('TOUSER', $ToUser).Replace('CLONEDIR', $CloneTo)
+
+  & wsl.exe -d $DistroName -u root -- bash -lc $sh
+  return ($LASTEXITCODE -eq 0)
+}
+
 function Get-NextSteps {
   param([string]$DistroName, [string]$CloneTo, [string]$RepoUrl)
   # Split out so a test can assert the steps stay in sync with the parameters.
@@ -217,34 +298,30 @@ function Get-NextSteps {
 
 $DistroName is installed.
 
-The rest needs credentials or a human, so it is not scripted:
+What is left needs a human or a secret, so it is not scripted:
 
-  1. Enter the distro:
+  1. Enter the distro. Open a NEW window -- the rebuild changed the default user,
+     so any shell you already had open is still the old one.
        wsl -d $DistroName
 
-  2. Set a password (sudo needs one):
-       passwd
-
-  3. Git identity:
+  2. Git identity:
        git config --global user.name  "Your Name"
        git config --global user.email "your-email"
 
-  4. Clone your config repo, if the installer could not:
-       nix --extra-experimental-features 'nix-command flakes' \
-         run nixpkgs#git -- clone $RepoUrl ~/$CloneTo
+  3. Write the deny-list, then turn on the commit hook. It deliberately lives in no
+     repo, so a fresh machine has none and the scan fails closed until you write it:
+       mkdir -p ~/.config/devenv
+       nano ~/.config/devenv/deny-list.txt
+       git -C ~/$CloneTo config core.hooksPath githooks
 
-  5. First rebuild. Flakes go on the command line this once, because the imported
-     image is channel-based and has them disabled:
-       sudo nixos-rebuild switch --flake ~/$CloneTo#wsl \
-         --option experimental-features 'nix-command flakes'
+  4. Authenticate the agent:
+       claude
 
-     Afterwards it is just:
-       sudo nixos-rebuild switch --flake ~/$CloneTo#wsl
+From here every rebuild is one line, no flags:
+  sudo nixos-rebuild switch --flake ~/$CloneTo#wsl
 
-     Then close the shell and reopen it -- the default user changes.
-
-  6. Anything repo-specific -- commit hooks, scan configuration, agent auth --
-     is in that repo's README. Read it before your first commit.
+If something goes wrong and you cannot sudo, root needs no password:
+  wsl -d $DistroName -u root
 
 "@
 }
@@ -398,6 +475,39 @@ function Invoke-Main {
           Write-Warn "  git clone $(ConvertTo-SshUrl -Url $RepoUrl) ~/$CloneTo"
         }
       }
+    }
+  }
+
+  # Everything below needs the repo on disk.
+  $currentUser = (& wsl.exe -d $DistroName -- bash -lc 'echo $USER') -join ""
+  $currentUser = $currentUser.Trim()
+  $repoPath = "/home/$currentUser/$CloneTo"
+  $repoPresent = $false
+  & wsl.exe -d $DistroName -- bash -lc "test -d '$repoPath'" 2>$null
+  if ($LASTEXITCODE -eq 0) { $repoPresent = $true }
+
+  if (-not $SkipRebuild -and $repoPresent) {
+    $targetUser = Get-FlakeDefaultUser -DistroName $DistroName -RepoPath $repoPath
+    if (-not $targetUser) { $targetUser = $currentUser }
+
+    Write-Step "First rebuild (as root, so no password is needed) - this takes a while"
+    if (Invoke-FirstRebuild -DistroName $DistroName -RepoPath $repoPath) {
+      Write-Host "    rebuild ok" -ForegroundColor Green
+
+      if ($targetUser -ne $currentUser) {
+        Write-Step "Moving the repo and SSH key into /home/$targetUser"
+        if (Move-UserState -DistroName $DistroName -FromUser $currentUser `
+                           -ToUser $targetUser -CloneTo $CloneTo) {
+          Write-Host "    moved" -ForegroundColor Green
+        } else {
+          Write-Warn "Move failed. The repo and key are still in /home/$currentUser."
+          Write-Warn "  wsl -d $DistroName -u root -- mv /home/$currentUser/$CloneTo /home/$targetUser/"
+        }
+      }
+    } else {
+      Write-Warn "Rebuild failed. Nothing was moved; the distribution is otherwise fine."
+      Write-Warn "Run it by hand to see the error:"
+      Write-Warn "  wsl -d $DistroName -u root -- nixos-rebuild switch --flake $repoPath#wsl --option experimental-features 'nix-command flakes'"
     }
   }
 
