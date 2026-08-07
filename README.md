@@ -36,9 +36,48 @@ already had open is stale.
 .\install.ps1 -NoSshKey               # do not generate a key
 .\install.ps1 -FreshKey               # new key even if one exists on Windows
 .\install.ps1 -NonInteractive         # never pause for input
-.\install.ps1 -NoKeepAlive           # skip the logon keep-alive task
+.\install.ps1 -NoKeepAlive            # skip the logon keep-alive task
 .\install.ps1 -Tarball .\nixos.wsl    # use a local artifact
 .\install.ps1 -DistroName NixOS-test  # register under a different name
+```
+
+## After it finishes
+
+Everything below runs from PowerShell unless marked otherwise.
+
+```powershell
+wsl -d NixOS                  # shell in the distro, as yourself
+wsl -d NixOS -u root          # as root, no password -- the recovery path
+wsl -l -v                     # list distros and whether they are running
+wsl --shutdown                # stop everything, if it wedges
+mstsc /v:localhost:3390       # the XFCE desktop
+```
+
+Keep the distro alive between terminal sessions. The installer registers this, but if you
+skipped it or want it running now without logging out:
+
+```powershell
+Start-ScheduledTask -TaskName wsl-keepalive
+```
+
+Inside the distro, the config repo drives everything:
+
+```bash
+devup                 # pull, then rebuild -- the usual one
+devre                 # rebuild only
+devtry                # build without switching: does this even compile
+devsync "message"     # commit, push, rebuild
+devpush "message"     # commit and push
+devroll               # roll back to the previous generation
+devst                 # git status of ~/devenv
+devcd                 # cd ~/devenv
+```
+
+Two things the installer deliberately leaves to you:
+
+```bash
+mkdir -p ~/.config/devenv && nano ~/.config/devenv/deny-list.txt   # before your first commit
+claude                                                            # authenticate the agent
 ```
 
 ## What it does
