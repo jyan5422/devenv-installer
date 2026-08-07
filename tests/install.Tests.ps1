@@ -192,3 +192,27 @@ Describe 'Test-ArtifactHash' {
     Test-ArtifactHash -Path $PSCommandPath -Sha256Url $null | Should -BeNullOrEmpty
   }
 }
+
+Describe 'ConvertTo-Base64Script' {
+  It 'round-trips a multi-line script' {
+    $s = "set -e`nKEY=`"`$HOME/.ssh/id_ed25519`"`ncat `"`$KEY.pub`""
+    $b = ConvertTo-Base64Script -Script $s
+    [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)) | Should -Be $s
+  }
+
+  It 'emits nothing a shell would treat as syntax' {
+    # The whole point: no newlines, no quotes, no dollar signs to survive two shells.
+    $b = ConvertTo-Base64Script -Script "echo `$HOME`ncat 'x y'`n"
+    $b | Should -Not -Match "[`n`r'`"$]"
+  }
+}
+
+Describe 'Get-DecodeCommand' {
+  It 'is a single line' {
+    (Get-DecodeCommand -Base64 'YWJj') -split "`n" | Should -HaveCount 1
+  }
+
+  It 'pipes through base64 -d into a login shell' {
+    Get-DecodeCommand -Base64 'YWJj' | Should -Be "echo 'YWJj' | base64 -d | bash -l"
+  }
+}

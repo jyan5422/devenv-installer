@@ -152,6 +152,46 @@ function Test-ArtifactHash {
   return ($actual -ieq $expected)
 }
 
+function ConvertTo-Base64Script {
+  <#
+    Encodes a shell script as base64 so it can cross PowerShell -> wsl.exe -> bash as a
+    single opaque token.
+
+    Passing a multi-line script straight to `bash -lc` does not survive that chain:
+    newlines and quoting get mangled somewhere in native-argument handling, and the
+    tail of the script can end up being parsed by PowerShell instead. The tell is a
+    capitalised "Cat:" in the output -- that is Get-Content, not /bin/cat.
+  #>
+  param([Parameter(Mandatory)][string]$Script)
+  [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Script))
+}
+
+function Get-DecodeCommand {
+  # Single-line, single-quoted, no newlines -- nothing left for either shell to mangle.
+  param([Parameter(Mandatory)][string]$Base64)
+  "echo '$Base64' | base64 -d | bash -l"
+}
+
+function Invoke-InDistro {
+  <#
+    Runs a shell script inside the distribution. Always goes through base64 -- see
+    ConvertTo-Base64Script for why. Returns stdout; sets $script:LastDistroExitCode.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [Parameter(Mandatory)][string]$Script,
+    [string]$User
+  )
+  $cmd = Get-DecodeCommand -Base64 (ConvertTo-Base64Script -Script $Script)
+  $out = if ($User) {
+    & wsl.exe -d $DistroName -u $User -- bash -lc $cmd
+  } else {
+    & wsl.exe -d $DistroName -- bash -lc $cmd
+  }
+  $script:LastDistroExitCode = $LASTEXITCODE
+  return $out
+}
+
 function ConvertTo-SshUrl {
   <#
     https://github.com/owner/repo(.git) -> git@github.com:owner/repo.git
@@ -195,9 +235,13 @@ fi
 cat "$KEY.pub"
 '@.Replace('COMMENT', $Comment)
 
-  $pub = & wsl.exe -d $DistroName -- bash -lc $keyScript
-  if ($LASTEXITCODE -ne 0) { return $null }
-  ($pub -join "`n").Trim()
+  $pub = Invoke-InDistro -DistroName $DistroName -Script $keyScript
+  if ($script:LastDistroExitCode -ne 0) { return $null }
+  $joined = ($pub -join "`n").Trim()
+  # A key line always starts with the type. Anything else means the script failed in a
+  # way that still exited 0, and returning it would print garbage as if it were a key.
+  if ($joined -notmatch '^ssh-') { return $null }
+  return $joined
 }
 
 function Test-GitHubSsh {
@@ -208,7 +252,7 @@ function Test-GitHubSsh {
   #>
   param([Parameter(Mandatory)][string]$DistroName)
   $probe = "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -T git@github.com 2>&1 || true"
-  $out = (& wsl.exe -d $DistroName -- bash -lc $probe) -join "`n"
+  $out = (Invoke-InDistro -DistroName $DistroName -Script $probe) -join "`n"
   [pscustomobject]@{
     Authenticated = ($out -match 'successfully authenticated')
     Output        = $out.Trim()
@@ -227,9 +271,9 @@ function Get-FlakeDefaultUser {
   )
   $cmd = "cd '$RepoPath' 2>/dev/null && nix --extra-experimental-features 'nix-command flakes' " +
          "eval --raw .#nixosConfigurations.wsl.config.wsl.defaultUser 2>/dev/null"
-  $u = (& wsl.exe -d $DistroName -u root -- bash -lc $cmd) -join ""
+  $u = (Invoke-InDistro -DistroName $DistroName -Script $cmd -User root) -join ""
   $u = $u.Trim()
-  if ($LASTEXITCODE -ne 0 -or -not $u) { return $null }
+  if ($script:LastDistroExitCode -ne 0 -or -not $u) { return $null }
   return $u
 }
 
@@ -254,8 +298,9 @@ function Invoke-FirstRebuild {
     [Parameter(Mandatory)][string]$DistroName,
     [Parameter(Mandatory)][string]$RepoPath
   )
-  & wsl.exe -d $DistroName -u root -- bash -lc (Get-FirstRebuildCommand -RepoPath $RepoPath)
-  return ($LASTEXITCODE -eq 0)
+  Invoke-InDistro -DistroName $DistroName -User root `
+    -Script (Get-FirstRebuildCommand -RepoPath $RepoPath) | Write-Host
+  return ($script:LastDistroExitCode -eq 0)
 }
 
 function Move-UserState {
@@ -294,8 +339,8 @@ chmod 600 "$TO/.ssh"/id_* 2>/dev/null || true
 chmod 644 "$TO/.ssh"/*.pub 2>/dev/null || true
 '@.Replace('FROMUSER', $FromUser).Replace('TOUSER', $ToUser).Replace('CLONEDIR', $CloneTo)
 
-  & wsl.exe -d $DistroName -u root -- bash -lc $sh
-  return ($LASTEXITCODE -eq 0)
+  Invoke-InDistro -DistroName $DistroName -Script $sh -User root | Out-Null
+  return ($script:LastDistroExitCode -eq 0)
 }
 
 function Get-NextSteps {
@@ -466,16 +511,16 @@ function Invoke-Main {
   }
 
   if (-not $SkipClone) {
-    & wsl.exe -d $DistroName -- bash -lc "test -e ~/$CloneTo" 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    Invoke-InDistro -DistroName $DistroName -Script "test -e ~/$CloneTo" | Out-Null
+    if ($script:LastDistroExitCode -eq 0) {
       Write-Step "~/$CloneTo already present - skipping clone"
     } else {
       # Prefer SSH when the key is live -- the only form that works for a private repo.
       $url = if ($sshReady) { ConvertTo-SshUrl -Url $RepoUrl } else { $RepoUrl }
       Write-Step "Cloning $url into ~/$CloneTo"
       $cloneCmd = "nix --extra-experimental-features 'nix-command flakes' run nixpkgs#git -- clone $url ~/$CloneTo"
-      & wsl.exe -d $DistroName -- bash -lc $cloneCmd
-      if ($LASTEXITCODE -ne 0) {
+      Invoke-InDistro -DistroName $DistroName -Script $cloneCmd | Write-Host
+      if ($script:LastDistroExitCode -ne 0) {
         Write-Warn "Clone failed (exit $LASTEXITCODE). The distribution itself is fine."
         if (-not $sshReady) {
           Write-Warn "If that repo is private, an anonymous HTTPS clone cannot work - add the key, then:"
@@ -486,12 +531,12 @@ function Invoke-Main {
   }
 
   # Everything below needs the repo on disk.
-  $currentUser = (& wsl.exe -d $DistroName -- bash -lc 'echo $USER') -join ""
+  $currentUser = (Invoke-InDistro -DistroName $DistroName -Script 'echo $USER') -join ""
   $currentUser = $currentUser.Trim()
   $repoPath = "/home/$currentUser/$CloneTo"
   $repoPresent = $false
-  & wsl.exe -d $DistroName -- bash -lc "test -d '$repoPath'" 2>$null
-  if ($LASTEXITCODE -eq 0) { $repoPresent = $true }
+  Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
+  if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
 
   if (-not $SkipRebuild -and $repoPresent) {
     $targetUser = Get-FlakeDefaultUser -DistroName $DistroName -RepoPath $repoPath
