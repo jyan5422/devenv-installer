@@ -284,64 +284,67 @@ function Invoke-Main {
     Write-Warn "Consider 'wsl --update' first - the newer path is less fragile."
   }
 
-  if ((Get-InstalledDistros) -contains $DistroName) {
-    Write-Host ""
-    Write-Host "A distribution named '$DistroName' already exists - nothing to do." -ForegroundColor Green
-    Write-Host "  Enter it:    wsl -d $DistroName"
-    Write-Host "  Start over:  wsl --unregister $DistroName   (destroys its filesystem)"
-    return
+  # Idempotency is per phase, not for the script as a whole. An existing distribution
+  # only means the *install* is done -- the key and the clone may still be outstanding,
+  # and the documented flow (install WSL, reboot, re-run) lands here every time.
+  $alreadyInstalled = (Get-InstalledDistros) -contains $DistroName
+  if ($alreadyInstalled) {
+    Write-Step "'$DistroName' is already registered - skipping install"
+    Write-Host "    Start over with: wsl --unregister $DistroName   (destroys its filesystem)"
   }
 
-  if ($Tarball) {
-    if (-not (Test-Path -LiteralPath $Tarball)) { throw "Not found: $Tarball" }
-    $artifact = (Resolve-Path -LiteralPath $Tarball).Path
-    Write-Step "Using supplied artifact: $artifact"
-  } else {
-    Write-Step "Finding the latest NixOS-WSL release"
-    $asset = Resolve-NixosWslAsset
-    Write-Host "    $($asset.Tag) / $($asset.Name) ($([math]::Round($asset.Size / 1MB, 1)) MB)"
-
-    $artifact = Join-Path ([IO.Path]::GetTempPath()) $asset.Name
-    Write-Step "Downloading to $artifact"
-    $prev = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'   # the progress bar makes this ~10x slower
-    try {
-      Invoke-WebRequest -Uri $asset.Url -OutFile $artifact `
-        -Headers @{ "User-Agent" = "devenv-installer" }
-    } finally {
-      $ProgressPreference = $prev
-    }
-
-    $actual = (Get-Item -LiteralPath $artifact).Length
-    if ($actual -ne $asset.Size) {
-      Remove-Item -LiteralPath $artifact -Force
-      throw "Download is $actual bytes, expected $($asset.Size). Deleted it; re-run."
-    }
-
-    Write-Step "Verifying checksum"
-    $hashOk = Test-ArtifactHash -Path $artifact -Sha256Url $asset.Sha256Url
-    if ($hashOk -eq $false) {
-      Remove-Item -LiteralPath $artifact -Force
-      throw "SHA256 mismatch. Deleted the download; re-run."
-    } elseif ($null -eq $hashOk) {
-      Write-Warn "No published checksum for this release - size check only."
+  if (-not $alreadyInstalled) {
+    if ($Tarball) {
+      if (-not (Test-Path -LiteralPath $Tarball)) { throw "Not found: $Tarball" }
+      $artifact = (Resolve-Path -LiteralPath $Tarball).Path
+      Write-Step "Using supplied artifact: $artifact"
     } else {
-      Write-Host "    sha256 ok"
+      Write-Step "Finding the latest NixOS-WSL release"
+      $asset = Resolve-NixosWslAsset
+      Write-Host "    $($asset.Tag) / $($asset.Name) ($([math]::Round($asset.Size / 1MB, 1)) MB)"
+
+      $artifact = Join-Path ([IO.Path]::GetTempPath()) $asset.Name
+      Write-Step "Downloading to $artifact"
+      $prev = $ProgressPreference
+      $ProgressPreference = 'SilentlyContinue'   # the progress bar makes this ~10x slower
+      try {
+        Invoke-WebRequest -Uri $asset.Url -OutFile $artifact `
+          -Headers @{ "User-Agent" = "devenv-installer" }
+      } finally {
+        $ProgressPreference = $prev
+      }
+
+      $actual = (Get-Item -LiteralPath $artifact).Length
+      if ($actual -ne $asset.Size) {
+        Remove-Item -LiteralPath $artifact -Force
+        throw "Download is $actual bytes, expected $($asset.Size). Deleted it; re-run."
+      }
+
+      Write-Step "Verifying checksum"
+      $hashOk = Test-ArtifactHash -Path $artifact -Sha256Url $asset.Sha256Url
+      if ($hashOk -eq $false) {
+        Remove-Item -LiteralPath $artifact -Force
+        throw "SHA256 mismatch. Deleted the download; re-run."
+      } elseif ($null -eq $hashOk) {
+        Write-Warn "No published checksum for this release - size check only."
+      } else {
+        Write-Host "    sha256 ok"
+      }
     }
-  }
 
-  Write-Step "Installing '$DistroName' to $InstallPath"
-  New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
+    Write-Step "Installing '$DistroName' to $InstallPath"
+    New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 
-  if ($wslVersion -ge [version]"2.4.4") {
-    & wsl.exe --install --from-file $artifact --name $DistroName --location $InstallPath
-  } else {
-    & wsl.exe --import $DistroName $InstallPath $artifact --version 2
-  }
-  if ($LASTEXITCODE -ne 0) { throw "Distribution install failed with exit code $LASTEXITCODE" }
+    if ($wslVersion -ge [version]"2.4.4") {
+      & wsl.exe --install --from-file $artifact --name $DistroName --location $InstallPath
+    } else {
+      & wsl.exe --import $DistroName $InstallPath $artifact --version 2
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Distribution install failed with exit code $LASTEXITCODE" }
 
-  if (-not ((Get-InstalledDistros) -contains $DistroName)) {
-    throw "Install reported success but '$DistroName' is not registered. Check 'wsl --list --verbose'."
+    if (-not ((Get-InstalledDistros) -contains $DistroName)) {
+      throw "Install reported success but '$DistroName' is not registered. Check 'wsl --list --verbose'."
+    }
   }
 
   # SSH key. Generating it needs no credentials; only registering it does. Doing it
@@ -379,16 +382,21 @@ function Invoke-Main {
   }
 
   if (-not $SkipClone) {
-    # Prefer SSH when the key is live -- it is the only form that works for a private repo.
-    $url = if ($sshReady) { ConvertTo-SshUrl -Url $RepoUrl } else { $RepoUrl }
-    Write-Step "Cloning $url into ~/$CloneTo"
-    $cloneCmd = "nix --extra-experimental-features 'nix-command flakes' run nixpkgs#git -- clone $url ~/$CloneTo"
-    & wsl.exe -d $DistroName -- bash -lc $cloneCmd
-    if ($LASTEXITCODE -ne 0) {
-      Write-Warn "Clone failed (exit $LASTEXITCODE). The distribution itself is fine."
-      if (-not $sshReady) {
-        Write-Warn "If that repo is private, an anonymous HTTPS clone cannot work - add the key, then:"
-        Write-Warn "  git clone $(ConvertTo-SshUrl -Url $RepoUrl) ~/$CloneTo"
+    & wsl.exe -d $DistroName -- bash -lc "test -e ~/$CloneTo" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+      Write-Step "~/$CloneTo already present - skipping clone"
+    } else {
+      # Prefer SSH when the key is live -- the only form that works for a private repo.
+      $url = if ($sshReady) { ConvertTo-SshUrl -Url $RepoUrl } else { $RepoUrl }
+      Write-Step "Cloning $url into ~/$CloneTo"
+      $cloneCmd = "nix --extra-experimental-features 'nix-command flakes' run nixpkgs#git -- clone $url ~/$CloneTo"
+      & wsl.exe -d $DistroName -- bash -lc $cloneCmd
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Clone failed (exit $LASTEXITCODE). The distribution itself is fine."
+        if (-not $sshReady) {
+          Write-Warn "If that repo is private, an anonymous HTTPS clone cannot work - add the key, then:"
+          Write-Warn "  git clone $(ConvertTo-SshUrl -Url $RepoUrl) ~/$CloneTo"
+        }
       }
     }
   }
