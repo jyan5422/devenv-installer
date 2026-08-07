@@ -24,6 +24,21 @@ jobs:
           }
           Write-Host "parse ok"
 
+      - name: Parse with Windows PowerShell 5.1
+        # pwsh is 7.x, which accepts syntax 5.1 rejects -- || and && chain operators
+        # most of all. The documented invocation is `powershell -File`, i.e. 5.1, so
+        # parsing only under 7 let a hard parse error ship.
+        shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\install.ps1), [ref]$null, [ref]$errors)
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host "::error::5.1: $($_.Message)" }
+            exit 1
+          }
+          Write-Host "5.1 parse ok"
+
       - name: Lint
         shell: pwsh
         run: |

@@ -402,6 +402,22 @@ function Test-GitHubSsh {
   }
 }
 
+function Get-HeadCommitScript {
+  <#
+    Literal here-string on purpose: PowerShell must not interpolate any of this. An
+    earlier version inlined it in a double-quoted string using \$ as an escape --
+    which PowerShell does not recognise, so it parsed $(command -v git || ...) as
+    PowerShell and died on the || before the script could even load.
+  #>
+  param([Parameter(Mandatory)][string]$RepoPath)
+  $sh = @'
+GIT="$(command -v git 2>/dev/null || true)"
+if [ -z "$GIT" ]; then GIT="$(nix-shell -p git --run 'command -v git' 2>/dev/null | tail -1)"; fi
+if [ -x "$GIT" ]; then "$GIT" -C 'REPOPATH' log --oneline -1 2>/dev/null; fi
+'@
+  $sh.Replace('REPOPATH', $RepoPath)
+}
+
 function Get-UpdateCloneScript {
   <#
     Brings a clone to exactly origin/main when that is safe, and refuses to touch it
@@ -789,7 +805,8 @@ function Invoke-Main {
   Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
   if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
   $headLine = if ($repoPresent) {
-    ((Invoke-InDistro -DistroName $DistroName -Script "G=\$(command -v git || nix-shell -p git --run 'command -v git' 2>/dev/null | tail -1); \"\$G\" -C '$repoPath' log --oneline -1 2>/dev/null") -join " ").Trim()
+    ((Invoke-InDistro -DistroName $DistroName `
+       -Script (Get-HeadCommitScript -RepoPath $repoPath)) -join " ").Trim()
   } else { "n/a" }
   Write-Host "    user=$currentUser repo=$repoPath present=$repoPresent"
   Write-Host "    head=$headLine"
