@@ -194,9 +194,9 @@ function Select-AfterMarker {
   for ($i = 0; $i -lt $Lines.Count; $i++) {
     if ($Lines[$i] -match [regex]::Escape($Marker)) { $idx = $i }
   }
-  if ($idx -lt 0) { return ,@($Lines) }
+  if ($idx -lt 0) { return @($Lines) }
   if ($idx -ge $Lines.Count - 1) { return ,@() }
-  return ,@($Lines[($idx + 1)..($Lines.Count - 1)])
+  return @($Lines[($idx + 1)..($Lines.Count - 1)])
 }
 
 function Invoke-InDistro {
