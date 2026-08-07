@@ -45,6 +45,9 @@ param(
   # will not wait for you to register it.
   [switch]$NonInteractive,
 
+  # Generate a new keypair even if one already exists on the Windows side.
+  [switch]$FreshKey,
+
   # Stop after the clone instead of running the first rebuild. The rebuild is slow
   # and builds the whole system closure, so this exists for when you want to watch it
   # yourself or edit the config before it is applied.
@@ -203,6 +206,63 @@ function ConvertTo-SshUrl {
     return "git@github.com:$($Matches[1])/$($Matches[2]).git"
   }
   return $Url
+}
+
+function Get-WindowsSshKeyPath {
+  # Windows ships OpenSSH and uses the same conventional location.
+  param([string]$Home_ = $env:USERPROFILE)
+  Join-Path $Home_ ".ssh\id_ed25519"
+}
+
+function Copy-KeyIntoDistro {
+  <#
+    Pushes a Windows-side keypair into the distro. Goes through base64 rather than
+    /mnt/c so the file lands on ext4 with real permissions -- ssh refuses to use a key
+    it considers world-readable, and the Windows mount cannot express 0600.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [Parameter(Mandatory)][string]$PrivatePath
+  )
+  if (-not (Test-Path -LiteralPath $PrivatePath)) { return $false }
+  $pubPath = "$PrivatePath.pub"
+  if (-not (Test-Path -LiteralPath $pubPath)) { return $false }
+
+  $priv = [Convert]::ToBase64String([IO.File]::ReadAllBytes($PrivatePath))
+  $pub  = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pubPath))
+
+  $sh = @'
+set -e
+mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+echo 'PRIVB64' | base64 -d > "$HOME/.ssh/id_ed25519"
+echo 'PUBB64'  | base64 -d > "$HOME/.ssh/id_ed25519.pub"
+chmod 600 "$HOME/.ssh/id_ed25519"
+chmod 644 "$HOME/.ssh/id_ed25519.pub"
+'@.Replace('PRIVB64', $priv).Replace('PUBB64', $pub)
+
+  Invoke-InDistro -DistroName $DistroName -Script $sh | Out-Null
+  return ($script:LastDistroExitCode -eq 0)
+}
+
+function Copy-KeyOutOfDistro {
+  <#
+    Saves a distro-generated key back to Windows, so `wsl --unregister` does not destroy
+    it. Without this, every reinstall means a new key and another dead entry accumulating
+    in your GitHub settings.
+  #>
+  param(
+    [Parameter(Mandatory)][string]$DistroName,
+    [Parameter(Mandatory)][string]$PrivatePath
+  )
+  $sh = 'base64 -w0 "$HOME/.ssh/id_ed25519"; echo; base64 -w0 "$HOME/.ssh/id_ed25519.pub"'
+  $out = @(Invoke-InDistro -DistroName $DistroName -Script $sh)
+  if ($script:LastDistroExitCode -ne 0 -or $out.Count -lt 2) { return $false }
+
+  $dir = Split-Path -Parent $PrivatePath
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  [IO.File]::WriteAllBytes($PrivatePath, [Convert]::FromBase64String($out[0].Trim()))
+  [IO.File]::WriteAllBytes("$PrivatePath.pub", [Convert]::FromBase64String($out[1].Trim()))
+  return $true
 }
 
 function New-SshKeyInDistro {
@@ -481,10 +541,33 @@ function Invoke-Main {
   $sshReady = $false
   if (-not $NoSshKey) {
     Write-Step "SSH key"
+
+    # Reuse an existing Windows-side key if there is one. ssh-keygen output is random
+    # every run -- the -C comment is only a label -- so a regenerated key is a *new*
+    # key needing another GitHub registration. Persisting one keypair outside the
+    # distro is what makes `wsl --unregister` and a reinstall cost nothing.
+    $winKey = Get-WindowsSshKeyPath
+    $haveDistroKey = $null -ne (Invoke-InDistro -DistroName $DistroName `
+                       -Script 'test -f "$HOME/.ssh/id_ed25519" && echo yes')
+    $haveDistroKey = $haveDistroKey -and $script:LastDistroExitCode -eq 0
+
+    if (-not $FreshKey -and -not $haveDistroKey -and (Test-Path -LiteralPath $winKey)) {
+      if (Copy-KeyIntoDistro -DistroName $DistroName -PrivatePath $winKey) {
+        Write-Host "    reused the existing key from $winKey"
+      } else {
+        Write-Warn "Found $winKey but could not copy it in; generating a new one."
+      }
+    }
+
     $pub = New-SshKeyInDistro -DistroName $DistroName -Comment $Email
     if (-not $pub) {
       Write-Warn "Could not create or read a key. Skipping ahead; do it by hand."
     } else {
+      if (-not (Test-Path -LiteralPath $winKey)) {
+        if (Copy-KeyOutOfDistro -DistroName $DistroName -PrivatePath $winKey) {
+          Write-Host "    saved a copy to $winKey so a reinstall can reuse it"
+        }
+      }
       Write-Host ""
       Write-Host $pub -ForegroundColor Green
       Write-Host ""

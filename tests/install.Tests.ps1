@@ -216,3 +216,14 @@ Describe 'Get-DecodeCommand' {
     Get-DecodeCommand -Base64 'YWJj' | Should -Be "echo 'YWJj' | base64 -d | bash -l"
   }
 }
+
+Describe 'Get-WindowsSshKeyPath' {
+  It 'points at the conventional OpenSSH location' {
+    Get-WindowsSshKeyPath -Home_ 'C:\Users\someone' | Should -Be 'C:\Users\someone\.ssh\id_ed25519'
+  }
+
+  It 'names the private half, not the public one' {
+    # The .pub is derived by appending; getting this backwards would copy the wrong file.
+    Get-WindowsSshKeyPath -Home_ 'C:\x' | Should -Not -Match '\.pub$'
+  }
+}
