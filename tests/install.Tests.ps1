@@ -310,7 +310,7 @@ Describe 'Get-UpdateCloneScript' {
   BeforeAll { $script:s = Get-UpdateCloneScript -RepoPath '/home/nixos/devenv' }
 
   It 'cds to the repo it was given' {
-    $script:s | Should -Match "cd '/home/nixos/devenv'"
+    $script:s | Should -BeLike '*cd "/home/nixos/devenv"*'
   }
 
   It 'resets hard rather than fast-forwarding' {
@@ -333,16 +333,17 @@ Describe 'Get-UpdateCloneScript' {
 }
 
 Describe 'Get-UpdateCloneScript quoting' {
-  It 'lets the shell expand a path containing a variable' {
-    # Single quotes here meant `cd '$HOME/devenv'` never expanded, so the update
-    # always reported "no such directory" and the rebuild used a stale tree.
-    $s = Get-UpdateCloneScript -RepoPath '$HOME/devenv'
-    $s | Should -Match 'cd "\$HOME/devenv"'
-    $s | Should -Not -Match "cd '\$HOME/devenv'"
+  It 'double-quotes the path so the shell expands it' {
+    # Single quotes meant `cd '$HOME/devenv'` never expanded, so the update always
+    # reported "no such directory" and the rebuild silently used a stale tree.
+    # -BeLike, not -Match: a Windows path is full of regex metacharacters.
+    $s = Get-UpdateCloneScript -RepoPath 'PLACEHOLDER/devenv'
+    $s | Should -BeLike '*cd "PLACEHOLDER/devenv"*'
+    $s | Should -Not -BeLike "*cd 'PLACEHOLDER/devenv'*"
   }
 
   It 'names the path it could not enter' {
-    $s = Get-UpdateCloneScript -RepoPath '$HOME/devenv'
-    $s | Should -Match 'no such directory: \$RepoPath|no such directory: \$HOME/devenv'
+    $s = Get-UpdateCloneScript -RepoPath 'PLACEHOLDER/devenv'
+    $s | Should -BeLike '*no such directory: PLACEHOLDER/devenv*'
   }
 }
