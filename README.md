@@ -8,10 +8,31 @@ Public so the script can be fetched by URL. The environment it bootstraps
 
 ## Use
 
+Nothing to download by hand. The installer fetches the NixOS-WSL artifact itself (~550 MB)
+and verifies its published sha256.
+
+From PowerShell **as Administrator** — only strictly needed if WSL is not yet installed:
+
 ```powershell
 irm https://raw.githubusercontent.com/jyan5422/devenv-installer/main/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+If WSL was missing it installs it and stops for a **reboot**; reboot and run the second line
+again. Re-running at any point is safe — an existing distribution is detected and skipped.
+
+When it prints your public SSH key, paste it at <https://github.com/settings/ssh/new> (it
+opens the page for you), then press Enter. It verifies, then clones over SSH.
+
+Then, inside the distro:
+
+```bash
+passwd
+sudo nixos-rebuild switch --flake ~/devenv#wsl \
+  --option experimental-features 'nix-command flakes'
+```
+
+Close and reopen the shell afterwards — the rebuild changes the default user.
 
 ```powershell
 .\install.ps1 -DryRun                      # report what it would do, change nothing
