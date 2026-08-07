@@ -252,3 +252,38 @@ Describe 'Test-Base64String' {
     Test-Base64String 'YWJj ZA==' | Should -BeFalse
   }
 }
+
+Describe 'Select-AfterMarker' {
+  It 'drops everything before the marker' {
+    # The real case: a NixOS-WSL welcome banner printed by a login profile, followed
+    # by the output we actually asked for.
+    $lines = @('Welcome to your new NixOS-WSL system!', 'Please run sudo nixos-rebuild',
+               '@@M@@', 'nixos')
+    Select-AfterMarker -Lines $lines -Marker '@@M@@' | Should -Be @('nixos')
+  }
+
+  It 'uses the last marker when the banner repeats' {
+    $lines = @('banner', '@@M@@', 'banner again', '@@M@@', 'real')
+    Select-AfterMarker -Lines $lines -Marker '@@M@@' | Should -Be @('real')
+  }
+
+  It 'returns empty when the marker is the final line' {
+    # A command that produced no output at all -- exit code is what matters there.
+    $r = Select-AfterMarker -Lines @('noise', '@@M@@') -Marker '@@M@@'
+    $r.Count | Should -Be 0
+  }
+
+  It 'passes everything through when the marker is absent' {
+    Select-AfterMarker -Lines @('a', 'b') -Marker '@@M@@' | Should -Be @('a', 'b')
+  }
+
+  It 'returns an array, not null, for empty input' {
+    $r = Select-AfterMarker -Lines @() -Marker '@@M@@'
+    $r -is [array] | Should -BeTrue
+  }
+
+  It 'keeps multi-line output intact' {
+    Select-AfterMarker -Lines @('x', '@@M@@', 'l1', 'l2', 'l3') -Marker '@@M@@' |
+      Should -Be @('l1', 'l2', 'l3')
+  }
+}

@@ -175,24 +175,54 @@ function Get-DecodeCommand {
   "echo '$Base64' | base64 -d | bash -l"
 }
 
+function Select-AfterMarker {
+  <#
+    Returns the lines after the last occurrence of $Marker, or everything if the marker
+    is absent.
+
+    Needed because `bash -l` sources login profiles, and a freshly imported NixOS-WSL
+    image prints a multi-line welcome banner from one of them -- on every single
+    invocation. Without this, `whoami` returns the banner with the username glued on
+    the end, and the caller cheerfully builds a path out of it.
+  #>
+  param(
+    [string[]]$Lines,
+    [Parameter(Mandatory)][string]$Marker
+  )
+  if (-not $Lines) { return ,@() }
+  $idx = -1
+  for ($i = 0; $i -lt $Lines.Count; $i++) {
+    if ($Lines[$i] -match [regex]::Escape($Marker)) { $idx = $i }
+  }
+  if ($idx -lt 0) { return ,@($Lines) }
+  if ($idx -ge $Lines.Count - 1) { return ,@() }
+  return ,@($Lines[($idx + 1)..($Lines.Count - 1)])
+}
+
 function Invoke-InDistro {
   <#
     Runs a shell script inside the distribution. Always goes through base64 -- see
-    ConvertTo-Base64Script for why. Returns stdout; sets $script:LastDistroExitCode.
+    ConvertTo-Base64Script. Output is fenced by a marker so login-shell noise cannot
+    be mistaken for the command's own output. Sets $script:LastDistroExitCode.
   #>
   param(
     [Parameter(Mandatory)][string]$DistroName,
     [Parameter(Mandatory)][string]$Script,
     [string]$User
   )
-  $cmd = Get-DecodeCommand -Base64 (ConvertTo-Base64Script -Script $Script)
-  $out = if ($User) {
+  $marker = '@@DEVENV_BEGIN@@'
+  # The marker is printed by the script itself, so anything a login profile emitted
+  # while starting the shell is already behind us by the time it appears.
+  $wrapped = "printf '%s\n' '$marker'`n$Script"
+  $cmd = Get-DecodeCommand -Base64 (ConvertTo-Base64Script -Script $wrapped)
+
+  $raw = if ($User) {
     & wsl.exe -d $DistroName -u $User -- bash -lc $cmd
   } else {
     & wsl.exe -d $DistroName -- bash -lc $cmd
   }
   $script:LastDistroExitCode = $LASTEXITCODE
-  return $out
+  return (Select-AfterMarker -Lines @($raw) -Marker $marker)
 }
 
 function ConvertTo-SshUrl {
