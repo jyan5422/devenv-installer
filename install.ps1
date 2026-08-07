@@ -708,7 +708,17 @@ function Invoke-Main {
   if (-not $SkipClone) {
     Invoke-InDistro -DistroName $DistroName -Script "test -e ~/$CloneTo" | Out-Null
     if ($script:LastDistroExitCode -eq 0) {
-      Write-Step "~/$CloneTo already present - skipping clone"
+      # Present is not the same as current. Skipping straight past an existing clone
+      # meant a re-run rebuilt whatever was checked out last time, which is exactly
+      # wrong for a script whose whole selling point is that re-running is safe.
+      # As the owning user, not root -- git rejects a repo owned by someone else.
+      Write-Step "~/$CloneTo already present - updating"
+      Invoke-InDistro -DistroName $DistroName `
+        -Script "cd ~/$CloneTo && git pull --ff-only 2>&1" | Write-Host
+      if ($script:LastDistroExitCode -ne 0) {
+        Write-Warn "Could not fast-forward ~/$CloneTo - it may have local changes."
+        Write-Warn "The rebuild below will use whatever is currently checked out."
+      }
     } else {
       # Prefer SSH when the key is live -- the only form that works for a private repo.
       $url = if ($sshReady) { ConvertTo-SshUrl -Url $RepoUrl } else { $RepoUrl }
