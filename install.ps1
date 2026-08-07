@@ -415,7 +415,7 @@ function Get-UpdateCloneScript {
   #>
   param([Parameter(Mandatory)][string]$RepoPath)
   @"
-cd '$RepoPath' || { echo 'UPDATE: no such directory'; exit 1; }
+cd "$RepoPath" || { echo "UPDATE: no such directory: $RepoPath"; exit 1; }
 if [ -n "`$(git status --porcelain 2>/dev/null)" ]; then
   echo "UPDATE: local changes present, leaving the checkout alone"
   git log --oneline -1 2>/dev/null

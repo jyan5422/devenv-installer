@@ -331,3 +331,18 @@ Describe 'Get-UpdateCloneScript' {
     foreach ($code in 1..4) { $script:s | Should -Match "exit $code" }
   }
 }
+
+Describe 'Get-UpdateCloneScript quoting' {
+  It 'lets the shell expand a path containing a variable' {
+    # Single quotes here meant `cd '$HOME/devenv'` never expanded, so the update
+    # always reported "no such directory" and the rebuild used a stale tree.
+    $s = Get-UpdateCloneScript -RepoPath '$HOME/devenv'
+    $s | Should -Match 'cd "\$HOME/devenv"'
+    $s | Should -Not -Match "cd '\$HOME/devenv'"
+  }
+
+  It 'names the path it could not enter' {
+    $s = Get-UpdateCloneScript -RepoPath '$HOME/devenv'
+    $s | Should -Match 'no such directory: \$RepoPath|no such directory: \$HOME/devenv'
+  }
+}
