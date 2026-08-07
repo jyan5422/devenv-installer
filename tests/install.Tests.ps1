@@ -110,16 +110,47 @@ Describe 'ConvertTo-SshUrl' {
 
 Describe 'Get-NextSteps' {
   It 'substitutes the distro name and clone target' {
-    $s = Get-NextSteps -DistroName 'MyDistro' -CloneTo 'myconfig' -RepoUrl 'https://example.com/r.git'
+    $s = Get-NextSteps -DistroName 'MyDistro' -CloneTo 'myconfig'
     $s | Should -Match 'wsl -d MyDistro'
     $s | Should -Match '~/myconfig#wsl'
-    $s | Should -Match 'https://example\.com/r\.git'
   }
 
-  It 'passes experimental features on the first rebuild' {
-    # The single most likely first-run failure, so assert the workaround is present.
-    $s = Get-NextSteps -DistroName 'NixOS' -CloneTo 'devenv' -RepoUrl 'x'
-    $s | Should -Match "experimental-features 'nix-command flakes'"
+  It 'tells you to open a new window' {
+    # The rebuild changes the default user, so an already-open shell is stale. Easy
+    # to skip past, and everything afterwards looks subtly wrong if you do.
+    $s = Get-NextSteps -DistroName 'NixOS' -CloneTo 'devenv'
+    $s | Should -Match 'NEW window'
+  }
+
+  It 'no longer tells you to pass experimental features' {
+    # The installer runs the first rebuild itself now. Leaving the flag in the printed
+    # steps would have people typing it forever on rebuilds that do not need it.
+    $s = Get-NextSteps -DistroName 'NixOS' -CloneTo 'devenv'
+    $s | Should -Not -Match "experimental-features"
+  }
+
+  It 'points at root as the recovery path' {
+    $s = Get-NextSteps -DistroName 'NixOS' -CloneTo 'devenv'
+    $s | Should -Match '-u root'
+  }
+}
+
+Describe 'Get-FirstRebuildCommand' {
+  It 'passes experimental features' {
+    # The single most likely way a clean install fails: the imported image is
+    # channel-based and has flakes off until this rebuild enables them.
+    Get-FirstRebuildCommand -RepoPath '/home/nixos/devenv' |
+      Should -Match "--option experimental-features 'nix-command flakes'"
+  }
+
+  It 'targets the wsl output of the flake at the given path' {
+    Get-FirstRebuildCommand -RepoPath '/home/nixos/devenv' |
+      Should -Match "--flake '/home/nixos/devenv'#wsl"
+  }
+
+  It 'does not invoke sudo' {
+    # It runs as root; a sudo here would prompt for a password that does not exist yet.
+    Get-FirstRebuildCommand -RepoPath '/x' | Should -Not -Match 'sudo'
   }
 }
 

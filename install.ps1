@@ -233,21 +233,28 @@ function Get-FlakeDefaultUser {
   return $u
 }
 
+function Get-FirstRebuildCommand {
+  <#
+    Experimental features go on the command line because the imported image is
+    channel-based and ships with flakes disabled -- the config enables them, but not
+    until it has been applied once. Split out from the caller so the flag itself is
+    testable; losing it is the single most likely way a clean install fails.
+  #>
+  param([Parameter(Mandatory)][string]$RepoPath)
+  "nixos-rebuild switch --flake '$RepoPath'#wsl --option experimental-features 'nix-command flakes'"
+}
+
 function Invoke-FirstRebuild {
   <#
     Runs as root rather than via sudo. The fresh image has no password set, so sudo
-    would prompt for one that does not exist; root needs none. Also why the installer
-    can do this at all without making the user set a password first.
+    would prompt for one that does not exist; root needs none. That is what lets the
+    installer do this at all without making the user set a password first.
   #>
   param(
     [Parameter(Mandatory)][string]$DistroName,
     [Parameter(Mandatory)][string]$RepoPath
   )
-  # Experimental features on the command line because the imported image is
-  # channel-based and ships with flakes disabled. Only needed this once.
-  $cmd = "nixos-rebuild switch --flake '$RepoPath'#wsl " +
-         "--option experimental-features 'nix-command flakes'"
-  & wsl.exe -d $DistroName -u root -- bash -lc $cmd
+  & wsl.exe -d $DistroName -u root -- bash -lc (Get-FirstRebuildCommand -RepoPath $RepoPath)
   return ($LASTEXITCODE -eq 0)
 }
 
@@ -292,7 +299,7 @@ chmod 644 "$TO/.ssh"/*.pub 2>/dev/null || true
 }
 
 function Get-NextSteps {
-  param([string]$DistroName, [string]$CloneTo, [string]$RepoUrl)
+  param([string]$DistroName, [string]$CloneTo)
   # Split out so a test can assert the steps stay in sync with the parameters.
   @"
 
@@ -511,7 +518,7 @@ function Invoke-Main {
     }
   }
 
-  Write-Host (Get-NextSteps -DistroName $DistroName -CloneTo $CloneTo -RepoUrl $RepoUrl) -ForegroundColor Cyan
+  Write-Host (Get-NextSteps -DistroName $DistroName -CloneTo $CloneTo) -ForegroundColor Cyan
 }
 
 # Dot-sourcing sets InvocationName to '.', which loads the functions without running
