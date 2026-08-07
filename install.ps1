@@ -244,25 +244,56 @@ chmod 644 "$HOME/.ssh/id_ed25519.pub"
   return ($script:LastDistroExitCode -eq 0)
 }
 
+function Test-Base64String {
+  # Cheap shape check before handing anything to FromBase64String, which throws rather
+  # than returning null on bad input.
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  return ($Value -match '^[A-Za-z0-9+/]+={0,2}$') -and ($Value.Length % 4 -eq 0)
+}
+
 function Copy-KeyOutOfDistro {
   <#
-    Saves a distro-generated key back to Windows, so `wsl --unregister` does not destroy
-    it. Without this, every reinstall means a new key and another dead entry accumulating
-    in your GitHub settings.
+    Saves a distro-generated key back to Windows so `wsl --unregister` does not destroy
+    it -- otherwise every reinstall mints a new key and leaves another dead entry in
+    your GitHub settings.
+
+    Best-effort by contract. This is a convenience, and it must never be able to fail
+    the install: an earlier version parsed the output positionally, met something that
+    was not base64, and threw out of the whole run.
   #>
   param(
     [Parameter(Mandatory)][string]$DistroName,
     [Parameter(Mandatory)][string]$PrivatePath
   )
-  $sh = 'base64 -w0 "$HOME/.ssh/id_ed25519"; echo; base64 -w0 "$HOME/.ssh/id_ed25519.pub"'
-  $out = @(Invoke-InDistro -DistroName $DistroName -Script $sh)
-  if ($script:LastDistroExitCode -ne 0 -or $out.Count -lt 2) { return $false }
+  try {
+    # Delimited, not positional. A login shell can print banners, and nix can print
+    # progress, so "the first line" is not a safe assumption.
+    $sh = @'
+printf '@@PRIV@@\n'
+base64 -w0 "$HOME/.ssh/id_ed25519" 2>/dev/null; printf '\n'
+printf '@@PUB@@\n'
+base64 -w0 "$HOME/.ssh/id_ed25519.pub" 2>/dev/null; printf '\n'
+'@
+    $out = @(Invoke-InDistro -DistroName $DistroName -Script $sh)
+    if ($script:LastDistroExitCode -ne 0) { return $false }
 
-  $dir = Split-Path -Parent $PrivatePath
-  New-Item -ItemType Directory -Force -Path $dir | Out-Null
-  [IO.File]::WriteAllBytes($PrivatePath, [Convert]::FromBase64String($out[0].Trim()))
-  [IO.File]::WriteAllBytes("$PrivatePath.pub", [Convert]::FromBase64String($out[1].Trim()))
-  return $true
+    $priv = $null; $pub = $null
+    for ($i = 0; $i -lt $out.Count; $i++) {
+      if ($out[$i] -eq '@@PRIV@@' -and $i + 1 -lt $out.Count) { $priv = $out[$i + 1].Trim() }
+      if ($out[$i] -eq '@@PUB@@'  -and $i + 1 -lt $out.Count) { $pub  = $out[$i + 1].Trim() }
+    }
+
+    if (-not (Test-Base64String $priv) -or -not (Test-Base64String $pub)) { return $false }
+
+    $dir = Split-Path -Parent $PrivatePath
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    [IO.File]::WriteAllBytes($PrivatePath, [Convert]::FromBase64String($priv))
+    [IO.File]::WriteAllBytes("$PrivatePath.pub", [Convert]::FromBase64String($pub))
+    return $true
+  } catch {
+    return $false
+  }
 }
 
 function New-SshKeyInDistro {
@@ -586,8 +617,11 @@ function Invoke-Main {
       Write-Warn "Could not create or read a key. Skipping ahead; do it by hand."
     } else {
       if (-not (Test-Path -LiteralPath $winKey)) {
+        # Convenience only -- never let a backup failure stop the install.
         if (Copy-KeyOutOfDistro -DistroName $DistroName -PrivatePath $winKey) {
           Write-Host "    saved a copy to $winKey so a reinstall can reuse it"
+        } else {
+          Write-Warn "Could not back the key up to $winKey - carrying on."
         }
       }
       Write-Host ""

@@ -227,3 +227,28 @@ Describe 'Get-WindowsSshKeyPath' {
     Get-WindowsSshKeyPath -Home_ 'C:\x' | Should -Not -Match '\.pub$'
   }
 }
+
+Describe 'Test-Base64String' {
+  It 'accepts well-formed base64' {
+    Test-Base64String 'YWJjZA==' | Should -BeTrue
+  }
+
+  It 'rejects the empty string and null' {
+    Test-Base64String '' | Should -BeFalse
+    Test-Base64String $null | Should -BeFalse
+  }
+
+  It 'rejects a shell banner or error text' {
+    # The real failure: something non-base64 reached FromBase64String, which throws
+    # instead of returning null, and took the whole install down with it.
+    Test-Base64String 'base64: /home/x/.ssh/id_ed25519: No such file' | Should -BeFalse
+  }
+
+  It 'rejects a length that is not a multiple of four' {
+    Test-Base64String 'YWJjZA=' | Should -BeFalse
+  }
+
+  It 'rejects characters outside the alphabet' {
+    Test-Base64String 'YWJj ZA==' | Should -BeFalse
+  }
+}
