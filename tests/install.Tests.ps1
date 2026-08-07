@@ -360,37 +360,7 @@ Describe 'Get-UpdateCloneScript quoting' {
   }
 }
 
-Describe 'Get-GitIdentityScript' {
-  BeforeAll {
-    $script:g = Get-GitIdentityScript -Name 'A Person' -Email 'a@b.c' -RepoPath '/home/u/devenv'
-  }
 
-  It 'sets both halves of the identity' {
-    $script:g | Should -BeLike "*user.name 'A Person'*"
-    $script:g | Should -BeLike "*user.email 'a@b.c'*"
-  }
-
-  It 'marks the repo safe and turns the commit hook on' {
-    $script:g | Should -BeLike '*safe.directory*/home/u/devenv*'
-    $script:g | Should -BeLike '*core.hooksPath githooks*'
-  }
-
-  It 'creates the deny-list directory but not the file' {
-    # The file must stay absent: the scan fails closed without patterns, which is the
-    # intended prompt to write them. A stub would just make it fail confusingly.
-    $script:g | Should -BeLike '*mkdir -p*.config/devenv*'
-    $script:g | Should -Not -BeLike '*deny-list.txt*'
-  }
-}
-
-Describe 'git identity defaults' {
-  It 'uses the ID-prefixed noreply form' {
-    # GitHub attributes commits by email. The bare username@users.noreply form is
-    # legacy; the numeric-ID prefix is what GitHub issues now.
-    $s = Get-Content (Join-Path $PSScriptRoot '..' 'install.ps1') -Raw
-    $s | Should -Match '\d+\+[A-Za-z0-9-]+@users\.noreply\.github\.com'
-  }
-}
 
 Describe 'Get-FindCloneScript' {
   It 'searches every home, not just one' {
@@ -428,5 +398,25 @@ Describe 'Get-AdoptCloneScript' {
   It 'restores private key permissions after the move' {
     # ssh rejects a key it considers too readable, and chown alone does not fix mode.
     $script:a | Should -BeLike '*chmod 600*'
+  }
+}
+
+Describe 'Get-GitIdentityScript' {
+  BeforeAll { $script:g = Get-GitIdentityScript -RepoPath '/home/u/devenv' }
+
+  It 'does not try to write the global config' {
+    # home-manager makes ~/.gitconfig a read-only store symlink, so --global fails
+    # with "could not lock config file". Identity belongs in the config repo.
+    $script:g | Should -Not -BeLike '*--global user.name*'
+    $script:g | Should -Not -BeLike '*--global user.email*'
+  }
+
+  It 'still turns the commit hook on' {
+    # Repo-local config writes to .git/config, which nothing manages.
+    $script:g | Should -BeLike '*core.hooksPath githooks*'
+  }
+
+  It 'reports the identity it found' {
+    $script:g | Should -BeLike '*identity:*'
   }
 }

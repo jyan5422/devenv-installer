@@ -45,14 +45,6 @@ param(
   # will not wait for you to register it.
   [switch]$NonInteractive,
 
-  # Git identity, set inside the distro after the rebuild. Not secrets -- the noreply
-  # address is designed to be public and appears in every commit anyway. Override on
-  # the command line for a different machine or user.
-  [string]$GitName  = "James Yan",
-  [string]$GitEmail = "7458939+jyan5422@users.noreply.github.com",
-
-  # Do not touch git identity at all.
-  [switch]$NoGitIdentity,
 
   # Generate a new keypair even if one already exists on the Windows side.
   [switch]$FreshKey,
@@ -623,22 +615,20 @@ chmod 644 "$TO/.ssh"/*.pub 2>/dev/null || true
 }
 
 function Get-GitIdentityScript {
-  param(
-    [Parameter(Mandatory)][string]$Name,
-    [Parameter(Mandatory)][string]$Email,
-    [Parameter(Mandatory)][string]$RepoPath
-  )
+  param([Parameter(Mandatory)][string]$RepoPath)
   # Safe to assume git here: this runs after the rebuild, which puts it in the system
   # profile. Before the rebuild it does not exist at all.
+  # Deliberately does NOT set user.name/user.email. home-manager's git module makes
+  # ~/.gitconfig a read-only store symlink, so `git config --global` fails outright
+  # with "could not lock config file". Identity belongs in the config repo, which is
+  # also the only place it survives a rebuild. Repo-local and directory settings are
+  # fine -- those write to .git/config, which nothing manages.
   $sh = @'
-git config --global user.name 'GITNAME'
-git config --global user.email 'GITEMAIL'
-git config --global --add safe.directory 'REPOPATH'
 git -C 'REPOPATH' config core.hooksPath githooks 2>/dev/null || true
 mkdir -p "$HOME/.config/devenv"
-echo "identity: $(git config --global user.name) <$(git config --global user.email)>"
+echo "identity: $(git config user.name) <$(git config user.email)>"
 '@
-  $sh.Replace('GITNAME', $Name).Replace('GITEMAIL', $Email).Replace('REPOPATH', $RepoPath)
+  $sh.Replace('REPOPATH', $RepoPath)
 }
 
 function Get-NextSteps {
@@ -927,18 +917,10 @@ function Invoke-Main {
         }
       }
 
-      if (-not $NoGitIdentity) {
-        if (-not $GitName -and -not $NonInteractive)  { $GitName  = Read-Host "Git user.name" }
-        if (-not $GitEmail -and -not $NonInteractive) { $GitEmail = Read-Host "Git user.email" }
-        if ($GitName -and $GitEmail) {
-          Write-Step "Setting git identity and the commit hook"
-          Invoke-InDistro -DistroName $DistroName -User $targetUser `
-            -Script (Get-GitIdentityScript -Name $GitName -Email $GitEmail `
-                       -RepoPath "/home/$targetUser/$CloneTo") | ForEach-Object { Write-Host "    $_" }
-        } else {
-          Write-Warn "Skipping git identity - no name or email given."
-        }
-      }
+      Write-Step "Enabling the commit hook and reporting the git identity"
+      Invoke-InDistro -DistroName $DistroName -User $targetUser `
+        -Script (Get-GitIdentityScript -RepoPath "/home/$targetUser/$CloneTo") |
+        ForEach-Object { Write-Host "    $_" }
     } else {
       Write-Warn "Rebuild failed. Nothing was moved; the distribution is otherwise fine."
       Write-Warn "Run it by hand to see the error:"

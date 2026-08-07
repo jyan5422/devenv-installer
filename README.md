@@ -34,8 +34,6 @@ the deny-list, and authenticating your agent — the installer prints all three.
 
 ```powershell
 .\install.ps1 -DryRun                      # report what it would do, change nothing
-.\install.ps1 -GitName 'X' -GitEmail 'x@y' # override the default git identity
-.\install.ps1 -NoGitIdentity               # leave git config alone
 .\install.ps1 -SkipRebuild                 # stop after the clone; rebuild yourself
 .\install.ps1 -SkipClone                   # register the distro only
 .\install.ps1 -NoSshKey                    # do not generate a key
@@ -60,7 +58,7 @@ the deny-list, and authenticating your agent — the installer prints all three.
 6. Runs the first rebuild as root, so nothing has to prompt for a password.
 7. Moves the repo and the SSH key into the new default user's home, reading that username out
    of the flake.
-8. Prints what's left: git identity, deny-list, agent auth.
+8. Prints what's left: the deny-list and agent auth. Git identity is not set here -- home-manager makes `~/.gitconfig` read-only, so it belongs in the config repo.
 
 **Every phase checks itself.** Re-running is safe at any point and picks up wherever it got
 to — an existing distribution only means the install is done, not the key or the clone. An
