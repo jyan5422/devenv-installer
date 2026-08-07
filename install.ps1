@@ -402,6 +402,32 @@ function Test-GitHubSsh {
   }
 }
 
+function Get-UpdateCloneScript {
+  <#
+    Brings a clone to exactly origin/main when that is safe, and refuses to touch it
+    when it is not.
+
+    A clean tree is reset hard rather than fast-forwarded: reset also repairs a
+    diverged or detached checkout, where pull --ff-only just fails and leaves you
+    building something old. A dirty tree is left alone -- uncommitted work outranks
+    being current -- but the caller is told, loudly, which is the part that matters.
+    Silently rebuilding a stale tree is the failure mode this exists to prevent.
+  #>
+  param([Parameter(Mandatory)][string]$RepoPath)
+  @"
+cd '$RepoPath' || { echo 'UPDATE: no such directory'; exit 1; }
+if [ -n "`$(git status --porcelain 2>/dev/null)" ]; then
+  echo "UPDATE: local changes present, leaving the checkout alone"
+  git log --oneline -1 2>/dev/null
+  exit 2
+fi
+git fetch origin 2>&1 || { echo 'UPDATE: fetch failed'; git log --oneline -1; exit 3; }
+git reset --hard origin/HEAD 2>/dev/null || git reset --hard origin/main 2>&1 || {
+  echo 'UPDATE: reset failed'; git log --oneline -1; exit 4; }
+echo "UPDATE: now at `$(git rev-parse --short HEAD)"
+"@
+}
+
 function Get-FlakeDefaultUser {
   <#
     Reads wsl.defaultUser out of the cloned flake, so the installer does not have to
@@ -712,12 +738,14 @@ function Invoke-Main {
       # meant a re-run rebuilt whatever was checked out last time, which is exactly
       # wrong for a script whose whole selling point is that re-running is safe.
       # As the owning user, not root -- git rejects a repo owned by someone else.
-      Write-Step "~/$CloneTo already present - updating"
-      Invoke-InDistro -DistroName $DistroName `
-        -Script "cd ~/$CloneTo && git pull --ff-only 2>&1" | Write-Host
-      if ($script:LastDistroExitCode -ne 0) {
-        Write-Warn "Could not fast-forward ~/$CloneTo - it may have local changes."
-        Write-Warn "The rebuild below will use whatever is currently checked out."
+      Write-Step "~/$CloneTo already present - bringing it to origin"
+      $upOut = @(Invoke-InDistro -DistroName $DistroName `
+                   -Script (Get-UpdateCloneScript -RepoPath "`$HOME/$CloneTo"))
+      foreach ($l in $upOut) { Write-Host "    $l" }
+      if ($script:LastDistroExitCode -eq 2) {
+        Write-Warn "The rebuild below will use your local state, not origin."
+      } elseif ($script:LastDistroExitCode -ne 0) {
+        Write-Warn "Could not update the clone. The rebuild will use whatever is checked out."
       }
     } else {
       # Prefer SSH when the key is live -- the only form that works for a private repo.
@@ -749,7 +777,11 @@ function Invoke-Main {
   $repoPresent = $false
   Invoke-InDistro -DistroName $DistroName -Script "test -d '$repoPath'" | Out-Null
   if ($script:LastDistroExitCode -eq 0) { $repoPresent = $true }
+  $headLine = if ($repoPresent) {
+    ((Invoke-InDistro -DistroName $DistroName -Script "git -C '$repoPath' log --oneline -1 2>/dev/null") -join " ").Trim()
+  } else { "n/a" }
   Write-Host "    user=$currentUser repo=$repoPath present=$repoPresent"
+  Write-Host "    head=$headLine"
 
   if ($SkipRebuild) {
     Write-Step "Skipping the first rebuild (-SkipRebuild). Run it yourself with:"
